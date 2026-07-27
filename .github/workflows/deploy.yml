@@ -1,0 +1,62 @@
+# Builds the app and publishes it to GitHub Pages on every push to main.
+#
+# The build job runs the full check — typecheck, lint and tests — before it produces the
+# artifact, so a broken main never reaches the live demo. That ordering is the point of
+# having CI here at all; `vite build` alone would happily ship a bundle whose domain
+# tests are red.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Lets you re-run a deploy from the Actions tab without pushing an empty commit.
+  workflow_dispatch:
+
+# GITHUB_TOKEN needs to write Pages and mint the deployment's OIDC identity.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. `cancel-in-progress: false` so a run that is already publishing
+# finishes rather than leaving the site half-swapped.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` (not `install`) — the lockfile is the contract, and a deploy is exactly
+      # where a silently upgraded transitive dependency would be worst.
+      - run: npm ci
+
+      - name: Typecheck, lint and test
+        run: |
+          npm run lint
+          npm test
+
+      - run: npm run build
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

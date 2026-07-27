@@ -6,6 +6,12 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // GitHub Pages serves a project site from a subpath, not from the domain root, so the
+  // built asset URLs have to be prefixed with the repo name or every script and stylesheet
+  // 404s. `npm run dev` is unaffected — Vite only applies `base` to a production build.
+  // Deploying anywhere that serves from the root (Vercel, Netlify, a plain static host)
+  // means setting this back to '/'.
+  base: '/material-tracker-portfolio/',
   plugins: [react()],
   test: {
     environment: 'node',

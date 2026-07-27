@@ -2,7 +2,7 @@
 
 **A procurement tracker for construction specialty materials — it answers "what do I have to buy this week, and what did somebody promise me that hasn't shown up?"**
 
-[**▶ Open the live demo**](https://material-tracker-portfolio.vercel.app) · no signup, loads with sample data, everything stays in your browser.
+[**▶ Open the live demo**](https://andresfdo25.github.io/material-tracker-portfolio/) · no signup, loads with sample data, everything stays in your browser.
 
 ![React 19](https://img.shields.io/badge/React-19-087ea4) ![TypeScript 6](https://img.shields.io/badge/TypeScript-6-3178c6) ![Vite 8](https://img.shields.io/badge/Vite-8-646cff) ![Vitest](https://img.shields.io/badge/tests-128%20passing-4c9a2a) ![License](https://img.shields.io/badge/license-MIT-blue)
 
