@@ -11,6 +11,11 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 /**
  * Button — the editorial CTA. Primary is near-black ink with a 12px radius; secondary
  * is a hairline-outlined button that pairs with it.
+ *
+ * The hover / active / focus states live in `styles/controls.css` (`.btn`): an inline
+ * style can't declare a pseudo-class. They're built out of `filter` + `transform`, which
+ * no inline style here sets, so a caller that repaints the button (the red Delete
+ * Project, the navy-band ghosts) keeps its colour and still responds.
  */
 export function Button({
   variant = 'primary',
@@ -18,6 +23,7 @@ export function Button({
   pill = false,
   disabled = false,
   children,
+  className,
   style,
   ...rest
 }: ButtonProps) {
@@ -33,22 +39,30 @@ export function Button({
     padding: variant === 'legal' ? '12px 10px' : pad,
     borderWidth: 1,
     borderStyle: 'solid',
-    borderColor: 'transparent',
     borderRadius: pill ? 'var(--radius-pill)' : variant === 'legal' ? 'var(--radius-xs)' : 'var(--radius-lg)',
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.5 : 1,
-    transition: 'background 120ms ease, border-color 120ms ease',
     whiteSpace: 'nowrap',
     lineHeight: 1.2,
   };
+  // `ghost` deliberately declares NEITHER background nor borderColor: both are owned by
+  // `.btn--ghost` in controls.css, which is what lets it carry a resting outline and a
+  // hover wash built on `currentColor` (white over the navy band, ink over canvas).
+  // A variant that sets them inline would win over the stylesheet and go flat again.
   const variants: Record<ButtonVariant, CSSProperties> = {
-    primary: { background: 'var(--primary)', color: 'var(--on-primary)', boxShadow: disabled ? 'none' : 'var(--shadow-button)' },
+    primary: { background: 'var(--primary)', color: 'var(--on-primary)', borderColor: 'transparent', boxShadow: disabled ? 'none' : 'var(--shadow-button)' },
     secondary: { background: 'var(--canvas)', color: 'var(--ink)', borderColor: disabled ? 'var(--border-strong)' : 'var(--hairline)' },
-    ghost: { background: 'transparent', color: 'var(--ink)' },
-    legal: { background: 'var(--link)', color: 'var(--on-primary)', font: 'var(--text-legal)' },
+    ghost: { color: 'var(--ink)' },
+    legal: { background: 'var(--link)', color: 'var(--on-primary)', borderColor: 'transparent', font: 'var(--text-legal)' },
   };
   return (
-    <button type="button" disabled={disabled} style={{ ...base, ...variants[variant], ...style }} {...rest}>
+    <button
+      type="button"
+      disabled={disabled}
+      className={['btn', `btn--${variant}`, className].filter(Boolean).join(' ')}
+      style={{ ...base, ...variants[variant], ...style }}
+      {...rest}
+    >
       {children}
     </button>
   );

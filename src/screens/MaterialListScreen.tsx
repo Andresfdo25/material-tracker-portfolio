@@ -19,7 +19,7 @@ import type { Cfg, ExportMode, ItemStatus, MaterialItem } from '../store/types';
 import { Button } from '../components/ds/Button';
 import { Banner } from '../components/ds/Banner';
 import { StatusBadge } from '../components/ds/StatusBadge';
-import { WorkPackageBar, type StatusChip } from '../components/ds/WorkPackageBar';
+import { PackageMoveButtons, WorkPackageBar, type StatusChip } from '../components/ds/WorkPackageBar';
 import { CreateProjectModal } from '../components/CreateProjectModal';
 import { AddWorkPackageModal } from '../components/AddWorkPackageModal';
 import { ImportMaterialsModal } from '../components/ImportMaterialsModal';
@@ -326,10 +326,6 @@ export function MaterialListScreen() {
                 collapsed={!!collapsed[pkg.id]}
                 stateText={dirty ? 'auto-saved draft · changes not in report yet' : `in report since ${pkg.reportSince}`}
                 onToggle={() => toggle(pkg.id)}
-                onMoveUp={!client && !readOnly ? () => actions.reorderPackage(pkg.id, -1) : undefined}
-                onMoveDown={!client && !readOnly ? () => actions.reorderPackage(pkg.id, 1) : undefined}
-                moveUpDisabled={pkgIdx === 0}
-                moveDownDisabled={pkgIdx === packages.length - 1}
                 actions={
                   !client && !readOnly && (
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -338,6 +334,8 @@ export function MaterialListScreen() {
                           lives here and not on the item (see closesAtSite). */}
                       <button
                         type="button"
+                        className="chip-btn"
+                        aria-pressed={supplyOnly}
                         title={supplyOnly
                           ? 'Supply only — items close when they reach the jobsite. Click to switch to supply and install.'
                           : 'Supply and install — items close once installed. Click to switch to supply only.'}
@@ -365,8 +363,15 @@ export function MaterialListScreen() {
                       <Button variant="ghost" size="sm" disabled={!dirty} onClick={() => actions.undoPackage(pkg.id)}>
                         ↩ Undo
                       </Button>
+                      <PackageMoveButtons
+                        onMoveUp={() => actions.reorderPackage(pkg.id, -1)}
+                        onMoveDown={() => actions.reorderPackage(pkg.id, 1)}
+                        upDisabled={pkgIdx === 0}
+                        downDisabled={pkgIdx === packages.length - 1}
+                      />
                       <button
                         type="button"
+                        className="icon-btn icon-btn--danger icon-btn--lg"
                         title="Delete work package (and all its items)"
                         aria-label="Delete work package"
                         onClick={() => {
@@ -375,12 +380,6 @@ export function MaterialListScreen() {
                             actions.deletePackage(pkg.id);
                           }
                         }}
-                        style={{
-                          border: 'none', background: 'transparent', cursor: 'pointer',
-                          color: 'var(--status-order-now-ink)', fontSize: 14, padding: '4px 6px', borderRadius: 'var(--radius-sm)',
-                        }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--status-order-now) 30%, white)'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                       >
                         🗑
                       </button>

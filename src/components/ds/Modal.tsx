@@ -28,7 +28,7 @@ export function Modal({ title, onClose, children, width = 560 }: ModalProps) {
       <div
         style={{
           width: '100%', maxWidth: width, background: 'var(--canvas)', borderRadius: 'var(--radius-lg)',
-          boxShadow: 'var(--shadow-pop)', border: '1px solid var(--hairline)', maxHeight: 'calc(100vh - 96px)',
+          boxShadow: 'var(--shadow-pop)', border: '1px solid var(--hairline)', maxHeight: 'calc(calc(100vh / var(--ui-scale)) - 96px)',
           display: 'flex', flexDirection: 'column',
         }}
       >

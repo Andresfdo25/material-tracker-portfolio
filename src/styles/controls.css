@@ -1,0 +1,324 @@
+/* controls.css — la capa de AFFORDANCE de los controles.
+ *
+ * Por qué existe: toda la UI se pinta con inline styles + tokens, y un inline style no
+ * puede declarar :hover / :active / :focus-visible. Resultado: media docena de botones
+ * simulaban el hover con onMouseEnter/onMouseLeave en JS, y los botones de icono (⋮, 🕒,
+ * ↺, ✎, 📐, 🔩…) no tenían NINGÚN estado: eran un emoji suelto sobre fondo transparente.
+ * Nosotros sabemos que son botones; un usuario nuevo no.
+ *
+ * Regla de convivencia con los inline styles: un inline style SIEMPRE le gana a una regla
+ * de hoja de estilos (salvo !important, que acá no se usa). Por eso hay dos técnicas:
+ *   · Propiedades que ningún inline style declara — `filter`, `transform`, `outline` —
+ *     sirven para dar feedback SIN pelearse con el color propio del botón (el 🗑️ rojo de
+ *     Delete Project conserva su rojo y aun así responde al hover).
+ *   · Cuando el estado SÍ necesita cambiar fondo o borde, el inline correspondiente se
+ *     borra del componente y la clase pasa a ser la dueña de esa propiedad.
+ *
+ * Referencias de diseño: mínimo cuatro estados (default / hover / active / disabled) +
+ * focus visible para teclado; los botones de icono se señalizan con contenedor y relleno,
+ * no cambiándole el color al icono.
+ */
+
+/* ====================================================================== ds/Button */
+/* Hover por `filter` + `transform`: funciona sobre cualquier fondo, incluidos los que
+ * el llamador pisa por inline (rojo de borrar, navy de la banda). */
+.btn {
+  transition: filter 120ms ease, transform 120ms ease, box-shadow 120ms ease,
+    background 120ms ease, border-color 120ms ease;
+}
+.btn:hover:not(:disabled) {
+  filter: brightness(0.95);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-button);
+}
+.btn:active:not(:disabled) {
+  filter: brightness(0.9);
+  transform: translateY(0);
+  box-shadow: inset 0 1px 2px rgba(24, 29, 38, 0.18);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: 2px;
+}
+/* En dark las superficies son oscuras: bajar el brillo no se ve, hay que subirlo. */
+:root[data-theme='dark'] .btn:hover:not(:disabled) {
+  filter: brightness(1.22);
+}
+:root[data-theme='dark'] .btn:active:not(:disabled) {
+  filter: brightness(1.35);
+}
+
+/* Ghost: era texto suelto. Ahora lleva contorno propio en reposo y un lavado en hover.
+ * `currentColor` hace que se adapte solo — sobre la banda navy el color del botón es
+ * blanco y el contorno sale blanco; sobre canvas es ink y sale gris. */
+.btn--ghost {
+  background: transparent;
+  border-color: color-mix(in srgb, currentColor 32%, transparent);
+}
+.btn--ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  border-color: color-mix(in srgb, currentColor 60%, transparent);
+}
+
+/* ============================================================== botones de icono */
+/* El pedido explícito del usuario: que un icono se lea como botón ANTES de pasarle el
+ * mouse por encima. Contenedor + hairline + relleno suave en reposo; en hover sube y
+ * se oscurece. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 24px;
+  min-height: 22px;
+  padding: 2px 5px;
+  /* `--border-strong`, no el hairline: estos botones se apoyan sobre canvas, sobre el
+   * `--surface-soft` del encabezado de la tabla Y sobre el `--wp-bar` de la barra de
+   * paquete. Con hairline el contorno desaparecía justo en los dos últimos — y el
+   * contorno es lo único que dice "esto es un botón" antes del hover. */
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease,
+    transform 120ms ease;
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--surface-strong);
+  border-color: var(--muted);
+  color: var(--ink);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-button);
+}
+.icon-btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: inset 0 1px 2px rgba(24, 29, 38, 0.18);
+}
+.icon-btn:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: 1px;
+}
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* Popover abierto — el disparador se queda hundido mientras su panel está en pantalla. */
+.icon-btn.is-on {
+  background: var(--surface-strong);
+  border-color: var(--muted);
+  color: var(--ink);
+  box-shadow: inset 0 1px 2px rgba(24, 29, 38, 0.14);
+}
+
+/* Sin caja en reposo. Existe por el ⋮ de la fila: es el ÚNICO botón que se repite una vez
+ * por renglón, así que dibujarle su chip llenaba la tabla de cajitas y competía con los
+ * datos — el usuario lo pidió de vuelta plano. El chip aparece completo en hover / foco /
+ * abierto, que es cuando hace falta. Cualquier otro botón usa `.icon-btn` a secas. */
+.icon-btn--bare {
+  border-color: transparent;
+  background: transparent;
+}
+.icon-btn--bare:hover:not(:disabled) {
+  border-color: var(--muted);
+  background: var(--surface-strong);
+}
+/* `.icon-btn--bare` viene DESPUÉS de `.icon-btn.is-on` y tiene la misma especificidad (0,2,0),
+ * así que le apagaba el estado abierto: un ⋮ o un ✎ con su panel desplegado se veía igual que
+ * uno en reposo. Esto sube a (0,3,0) y lo devuelve. */
+.icon-btn--bare.is-on {
+  border-color: var(--muted);
+  background: var(--surface-strong);
+}
+
+/* Pegado a un <select> (las flechas ▲▼ y la lupa del ProjectSwitcher): el grupo tiene
+ * que leerse como UN control, así que el relleno es canvas y no el gris del chip. Va acá
+ * y no inline justamente para que el hover pueda pisarlo. */
+.icon-btn--flush {
+  background: var(--canvas);
+}
+.icon-btn--flush:hover:not(:disabled) {
+  background: var(--surface-soft);
+}
+
+/* Sobre la banda navy el hairline gris desaparece: contorno y relleno translúcidos. */
+.icon-btn--on-dark {
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+.icon-btn--on-dark:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.75);
+}
+
+/* Destructivo (🗑) — rojo en reposo, relleno rojo en hover. */
+.icon-btn--danger {
+  color: var(--status-order-now-ink);
+  border-color: color-mix(in srgb, var(--status-order-now-ink) 40%, transparent);
+  background: color-mix(in srgb, var(--status-order-now) 25%, transparent);
+}
+.icon-btn--danger:hover:not(:disabled) {
+  background: var(--status-order-now);
+  border-color: var(--status-order-now-ink);
+}
+/* El semáforo NO se re-declara en dark (los pasteles se leen bien como relleno de badge),
+ * pero su tinta es un rojo casi negro: sobre canvas oscuro el 🗑 quedaba ilegible. Acá el
+ * par se invierte — tinta clara, relleno rojo translúcido. */
+:root[data-theme='dark'] .icon-btn--danger {
+  color: #ff9b9b;
+  border-color: rgba(255, 155, 155, 0.45);
+  background: rgba(216, 67, 67, 0.18);
+}
+:root[data-theme='dark'] .icon-btn--danger:hover:not(:disabled) {
+  color: #ffd4d4;
+  background: rgba(216, 67, 67, 0.42);
+  border-color: #ff9b9b;
+}
+
+/* La celda de etapa (🚚/🏭/📍/🔩) y el ⋮ de la fila: el objetivo de click más usado
+ * de la grilla, un punto más grande que el resto. */
+.icon-btn--lg {
+  min-width: 28px;
+  min-height: 26px;
+  font-size: 15px;
+}
+
+/* ==================================================== filas de menú (popovers) */
+/* Reemplaza los onMouseEnter/onMouseLeave que pintaban el fondo a mano: además del
+ * hover ahora hay foco de teclado, que en JS no existía. */
+.menu-item {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font: var(--text-body);
+  cursor: pointer;
+  transition: background 110ms ease, border-color 110ms ease;
+}
+.menu-item:hover {
+  background: var(--surface-soft);
+  border-color: var(--hairline);
+}
+.menu-item:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: -1px;
+}
+.menu-item--danger {
+  color: var(--status-order-now-ink);
+}
+.menu-item--danger:hover {
+  background: color-mix(in srgb, var(--status-order-now) 34%, transparent);
+  border-color: var(--status-order-now-ink);
+}
+/* Misma inversión que en `.icon-btn--danger`: en dark la tinta del semáforo no alcanza. */
+:root[data-theme='dark'] .menu-item--danger {
+  color: #ff9b9b;
+}
+:root[data-theme='dark'] .menu-item--danger:hover {
+  background: rgba(216, 67, 67, 0.24);
+  border-color: #ff9b9b;
+}
+/* Opción ya aplicada (preset de columnas activo) — se pinta con el teal de "cerrado". */
+.menu-item--on {
+  background: var(--status-installed);
+  border-color: var(--status-installed-ink);
+  color: var(--status-installed-ink);
+  font-weight: 700;
+}
+.menu-item--on:hover {
+  background: var(--status-installed);
+  border-color: var(--status-installed-ink);
+}
+/* Fila con su propio botón de borrar al lado (vistas guardadas): el hover lo pinta el
+ * contenedor, no cada mitad. */
+.menu-row:hover {
+  background: var(--surface-soft);
+}
+
+/* ======================================================= chips / píldoras toggle */
+/* Filtros de estado, chips por paquete, ⏰ LATE, scope supply-only: ya tenían forma de
+ * píldora, les faltaba responder. */
+.chip-btn {
+  transition: filter 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+.chip-btn:hover {
+  filter: brightness(0.96);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-button);
+}
+.chip-btn:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+.chip-btn:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: 2px;
+}
+:root[data-theme='dark'] .chip-btn:hover {
+  filter: brightness(1.18);
+}
+
+/* Cuadros de color del resaltador — crecen al pasar por encima. */
+.swatch-btn {
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.swatch-btn:hover {
+  transform: scale(1.14);
+  box-shadow: var(--shadow-button);
+}
+.swatch-btn:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: 2px;
+}
+
+/* Nav superior: la pestaña activa lleva su relleno + subrayado por inline style; las
+ * inactivas se quedaban planas y no decían que respondían al click. */
+.tab-btn {
+  background: transparent;
+  transition: background 120ms ease;
+}
+.tab-btn:hover {
+  background: var(--surface-soft);
+}
+.tab-btn:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: -2px;
+}
+
+/* Segmentado Internal / Client · GC: el lado activo va blanco por inline style, el
+ * inactivo necesitaba decir que también es clickeable. */
+.seg-btn {
+  background: transparent;
+}
+.seg-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.seg-btn:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .icon-btn,
+  .chip-btn,
+  .swatch-btn,
+  .menu-item {
+    transition: none;
+  }
+  .btn:hover,
+  .icon-btn:hover,
+  .chip-btn:hover,
+  .swatch-btn:hover {
+    transform: none;
+  }
+}

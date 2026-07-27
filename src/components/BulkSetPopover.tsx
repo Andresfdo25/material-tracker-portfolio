@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from './ds/Button';
 import { Select } from './ds/Select';
+import { anchorBelow } from './uiScale';
 
 export type BulkInputType = 'date' | 'number' | 'vendor' | 'text' | 'select' | 'po';
 
@@ -75,8 +76,7 @@ export function BulkSetPopover({
   }, [open]);
 
   const toggle = () => {
-    const r = btnRef.current!.getBoundingClientRect();
-    setPos({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 320)) });
+    setPos(anchorBelow(btnRef.current!, 320));
     setValue('');
     setOpen((o) => !o);
   };
@@ -87,13 +87,13 @@ export function BulkSetPopover({
     setOpen(false);
   };
 
+  // Toolbar pill: its own box, so it only borrows `.btn`'s hover/active/focus states.
+  // Header icon: `.icon-btn` owns the whole look — before it was a bare emoji on a
+  // transparent background and nothing said it could be clicked.
   const toolbarStyle: React.CSSProperties = {
     display: 'inline-flex', alignItems: 'center', gap: 6, height: 34, padding: '0 14px', cursor: 'pointer',
     borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--hairline)', borderRadius: 'var(--radius-lg)',
     background: 'var(--canvas)', color: 'var(--ink)', font: 'var(--text-body)', fontWeight: 500, whiteSpace: 'nowrap',
-  };
-  const headerStyle: React.CSSProperties = {
-    border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--muted)', fontSize: 13, lineHeight: 1, padding: '1px 3px', borderRadius: 'var(--radius-sm)',
   };
   const fieldStyle: React.CSSProperties = {
     height: 38, padding: '0 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--hairline)',
@@ -102,7 +102,16 @@ export function BulkSetPopover({
 
   return (
     <span ref={ref} style={{ display: 'inline-flex' }}>
-      <button ref={btnRef} type="button" onClick={toggle} aria-label={title} title={title} style={mode === 'toolbar' ? toolbarStyle : headerStyle}>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={toggle}
+        aria-label={title}
+        aria-expanded={open}
+        title={title}
+        className={mode === 'toolbar' ? 'btn' : `icon-btn${open ? ' is-on' : ''}`}
+        style={mode === 'toolbar' ? toolbarStyle : undefined}
+      >
         {mode === 'toolbar' ? `${icon} ${label ?? title}` : icon}
       </button>
       {open && createPortal(
@@ -148,6 +157,7 @@ export function BulkSetPopover({
                   <button
                     key={q.value}
                     type="button"
+                    className="chip-btn"
                     title={q.title}
                     onClick={() => { if (quickApply) { onApply(q.value); setOpen(false); } else setValue(q.value); }}
                     style={{

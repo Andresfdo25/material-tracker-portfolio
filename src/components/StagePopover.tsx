@@ -11,6 +11,7 @@ import { itemStage, logDrivesStage, prefixCompare, STAGE_META } from '../store/l
 import type { ItemStage, MaterialItem, WorkPackage } from '../store/types';
 import { Button } from './ds/Button';
 import { Select } from './ds/Select';
+import { anchorBelow } from './uiScale';
 
 interface StageChoice {
   value: ItemStage;
@@ -96,8 +97,7 @@ export function StagePopover(props: {
   };
 
   const toggle = () => {
-    const r = btnRef.current!.getBoundingClientRect();
-    setPos({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - (toolbar ? 350 : 320))) });
+    setPos(anchorBelow(btnRef.current!, toolbar ? 350 : 320));
     setDate('');
     if (toolbar) setWpId('');
     setOpen((o) => !o);
@@ -139,16 +139,22 @@ export function StagePopover(props: {
     borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--hairline)', borderRadius: 'var(--radius-lg)',
     background: 'var(--canvas)', color: 'var(--ink)', font: 'var(--text-body)', fontWeight: 500, whiteSpace: 'nowrap',
   };
-  const headerStyle: React.CSSProperties = {
-    border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--muted)', fontSize: 13, lineHeight: 1, padding: '1px 3px', borderRadius: 'var(--radius-sm)',
-  };
   const title = toolbar
     ? 'Register Delivery / Installation for a work package'
     : supplyOnly ? 'Set delivery stage' : 'Set delivery / installation stage';
 
   return (
     <span ref={ref} style={{ display: 'inline-flex' }}>
-      <button ref={btnRef} type="button" onClick={toggle} aria-label={title} title={title} style={toolbar ? toolbarStyle : headerStyle}>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={toggle}
+        aria-label={title}
+        aria-expanded={open}
+        title={title}
+        className={toolbar ? 'btn' : `icon-btn${open ? ' is-on' : ''}`}
+        style={toolbar ? toolbarStyle : undefined}
+      >
         {toolbar ? '🔩 Delivery / Installation' : supplyOnly ? '📍' : '🔩'}
       </button>
       {open && createPortal(
@@ -185,6 +191,7 @@ export function StagePopover(props: {
                 <button
                   key={c.value}
                   type="button"
+                  className="chip-btn"
                   onClick={() => setStage(c.value)}
                   style={{
                     textAlign: 'left', cursor: 'pointer', padding: '7px 9px', borderRadius: 'var(--radius-sm)',

@@ -42,11 +42,10 @@ export function ManageColumnsMenu({ hidden, onToggle, onReset }: {
           {HIDEABLE_COLUMNS.map((c) => (
             <label
               key={c.key}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', font: 'var(--text-body)', color: 'var(--ink)' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              className="menu-item"
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px' }}
             >
-              <input type="checkbox" checked={!hidden[c.key]} onChange={() => onToggle(c.key)} />
+              <input type="checkbox" checked={!hidden[c.key]} onChange={() => onToggle(c.key)} style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--brand-slate)' }} />
               {c.label}
             </label>
           ))}

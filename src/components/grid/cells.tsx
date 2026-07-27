@@ -3,12 +3,32 @@
 import { useEffect, useRef, useState } from 'react';
 import { cellInputStyle, focusCellBelow } from './cellStyles';
 
-/** Column header: label + its bulk-edit popover icon, kept on one baseline. */
-export function Hdr({ label, children }: { label: string; children?: React.ReactNode }) {
+/* Two fixed slots. Reserving the TALLEST title (two lines of `--text-caption`, 14/1.35)
+ * on every column is the whole point: with the icon inline, a one-line title and a
+ * two-line one put their icons at different heights and the header row never lined up.
+ * Fixed slots > `height: 100%` on the stack — a percentage height inside a `<th>` is
+ * unreliable across browsers, and this row is `position: sticky`. */
+const HDR_LABEL_H = 38;
+const HDR_SLOT_H = 24;
+
+/** Column header: the label on top, its bulk-edit popover on its own line underneath.
+ * Every column uses this — including the ones with no popover — so all the titles start
+ * on the same baseline and all the icons sit on the same row.
+ *
+ * **Siempre a la izquierda, sin excepción** (lote 49, pedido del usuario): antes había un
+ * prop `align` y QTY / Lead salían a la derecha y Delivery al centro, siguiendo cada uno la
+ * alineación de SUS datos. Leído de corrido, el renglón de títulos quedaba justificado y el
+ * de iconos disparejo. Los datos conservan su alineación —los números siguen a la derecha,
+ * que es donde se comparan—; el encabezado es otra cosa, es un índice, y un índice se lee en
+ * una sola columna. El prop se eliminó para que no pueda volver a divergir. */
+export function Hdr({ label, children }: {
+  label: React.ReactNode;
+  children?: React.ReactNode;
+}) {
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-      {label}
-      {children}
+    <span style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%', alignItems: 'flex-start' }}>
+      <span style={{ minHeight: HDR_LABEL_H, display: 'block', width: '100%' }}>{label}</span>
+      <span style={{ minHeight: HDR_SLOT_H, display: 'inline-flex', alignItems: 'center', gap: 4 }}>{children}</span>
     </span>
   );
 }

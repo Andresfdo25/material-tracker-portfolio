@@ -23,11 +23,15 @@ export function TabBar({ items, active, onSelect }: TabBarProps) {
             key={it.key}
             type="button"
             onClick={() => onSelect(it.key)}
+            aria-current={on ? 'page' : undefined}
+            // Only the ACTIVE tab paints its background inline; the inactive ones leave it
+            // to `.tab-btn` so the hover fill in controls.css can land on them.
+            className="tab-btn"
             style={{
               display: 'flex', alignItems: 'center', gap: 8, border: 'none', cursor: 'pointer',
               padding: '10px 16px', borderRadius: 'var(--radius-sm)', font: 'var(--text-body)',
-              fontWeight: on ? 600 : 400, background: on ? 'var(--surface-soft)' : 'transparent',
-              color: on ? 'var(--ink)' : 'var(--body)',
+              fontWeight: on ? 600 : 400, color: on ? 'var(--ink)' : 'var(--body)',
+              ...(on ? { background: 'var(--surface-soft)', boxShadow: 'inset 0 -2px 0 var(--brand-slate)' } : {}),
             }}
           >
             {it.icon && <span>{it.icon}</span>}

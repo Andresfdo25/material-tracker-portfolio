@@ -23,10 +23,15 @@ function ViewToggle({ value, onChange }: { value: ExportMode; onChange: (v: Expo
       <button
         type="button"
         onClick={() => onChange(v)}
+        aria-pressed={on}
+        title={on ? `Already showing the ${label} view` : `Switch to the ${label} view`}
+        // The inactive half declares no background: `.seg-btn` owns it, which is what
+        // lets it wash white on hover instead of reading as a plain label.
+        className="seg-btn"
         style={{
           flex: 1, border: 'none', borderRadius: 6, cursor: 'pointer', padding: '6px 10px',
           font: 'var(--text-caption)', fontWeight: on ? 700 : 500, whiteSpace: 'nowrap',
-          background: on ? '#ffffff' : 'transparent',
+          ...(on ? { background: '#ffffff' } : {}),
           color: on ? 'var(--brand-navy)' : 'rgba(255,255,255,0.85)',
           boxShadow: on ? 'var(--shadow-card)' : 'none',
           transition: 'background 120ms ease, color 120ms ease',

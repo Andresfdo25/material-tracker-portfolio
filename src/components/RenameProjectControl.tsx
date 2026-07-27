@@ -41,10 +41,12 @@ export function RenameProjectControl({ project }: { project: Project }) {
     <span ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
       <button
         type="button"
+        className={`icon-btn icon-btn--on-dark icon-btn--lg${open ? ' is-on' : ''}`}
         title="Edit project name & GC/Client"
         aria-label="Edit project name and GC/Client"
+        aria-expanded={open}
         onClick={openMenu}
-        style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'rgba(255,255,255,0.75)', fontSize: 16, padding: '4px 6px', lineHeight: 1 }}
+        style={{ fontSize: 16 }}
       >
         ✎
       </button>

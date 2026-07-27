@@ -45,10 +45,11 @@ export function RenamePackageControl({ pkg }: { pkg: WorkPackage }) {
     <span ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
       <button
         type="button"
+        className={`icon-btn icon-btn--bare${open ? ' is-on' : ''}`}
         title="Rename work package"
         aria-label="Rename work package"
+        aria-expanded={open}
         onClick={openMenu}
-        style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--muted)', fontSize: 13, padding: '2px 4px', lineHeight: 1 }}
       >
         ✎
       </button>

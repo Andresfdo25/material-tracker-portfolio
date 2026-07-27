@@ -173,7 +173,7 @@ export function SubmittalCoverModal({ items, onClose }: { items: MaterialItem[];
             Submittal Contents — {rows.length} item{rows.length === 1 ? '' : 's'}
             {pageCount > 1 && <span style={{ color: 'var(--info)' }}> → {pageCount} pages ({ROWS_FIRST} rows on the cover, then full-page sheets of {ROWS_CONT})</span>}
           </span>
-          <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'auto', maxHeight: '38vh' }}>
+          <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'auto', maxHeight: 'calc(38vh / var(--ui-scale))' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
               <colgroup>
                 <col style={{ width: 110 }} />

@@ -28,6 +28,8 @@ export function StatusFilterBar({ counts, filter, onToggle, onClear, lateCount, 
           <button
             key={s}
             type="button"
+            className="chip-btn"
+            aria-pressed={active}
             onClick={() => onToggle(s)}
             title={active ? 'Remove this status from the filter' : 'Add this status to the filter (multi-select)'}
             style={{
@@ -44,6 +46,8 @@ export function StatusFilterBar({ counts, filter, onToggle, onClear, lateCount, 
       {(lateCount > 0 || lateOnly) && (
         <button
           type="button"
+          className="chip-btn"
+          aria-pressed={lateOnly}
           onClick={onToggleLate}
           title={lateOnly
             ? 'Show every item again, not just the late deliveries'

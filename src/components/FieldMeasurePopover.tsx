@@ -10,6 +10,7 @@ import { Button } from './ds/Button';
 import { Select } from './ds/Select';
 import { fmtMDY, prefixCompare } from '../store/logic';
 import type { MaterialItem, WorkPackage } from '../store/types';
+import { anchorBelow } from './uiScale';
 
 export function FieldMeasurePopover({ packages, itemsOf, onApply, onClear, onNewPackage }: {
   packages: WorkPackage[];
@@ -59,8 +60,7 @@ export function FieldMeasurePopover({ packages, itemsOf, onApply, onClear, onNew
   const canApply = !!sel && !!date && selItems.length > 0;
 
   const toggle = () => {
-    const r = btnRef.current!.getBoundingClientRect();
-    setPos({ top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 340)) });
+    setPos(anchorBelow(btnRef.current!, 340));
     setWpId('');
     setDate('');
     setOpen((o) => !o);
@@ -101,7 +101,7 @@ export function FieldMeasurePopover({ packages, itemsOf, onApply, onClear, onNew
 
   return (
     <span ref={ref} style={{ display: 'inline-flex' }}>
-      <button ref={btnRef} type="button" onClick={toggle} aria-label="Set Field Measurements date" style={toolbarStyle}>
+      <button ref={btnRef} type="button" className="btn" onClick={toggle} aria-label="Set Field Measurements date" aria-expanded={open} style={toolbarStyle}>
         <span aria-hidden style={diamond(10)} />
         Set Field Measure date
       </button>

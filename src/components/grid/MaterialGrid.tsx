@@ -4,9 +4,9 @@
 import { useRef, useState } from 'react';
 import { useApp } from '../../store/useApp';
 import {
-  awaitingInstall, backorderQty, computeItem, daysLate, daysWaiting, deliveryWatch, fmtDays, fmtMDY, hasOpenBackorder,
+  awaitingInstall, computeItem, daysLate, daysWaiting, deliveryWatch, fmtDays, fmtMDY,
   installUrgency, isFromStock, isOfci, isPartial, isPartiallyInstalled, itemStage, logDrivesStage, STAGE_META,
-  submittalBlockers, SUBMITTALS, today, UNITS,
+  submittalBlockers, SUBMITTALS, UNITS,
 } from '../../store/logic';
 import type { Cfg, MaterialItem, WorkPackage } from '../../store/types';
 import { StatusBadge } from '../ds/StatusBadge';
@@ -17,7 +17,7 @@ import { SubmittalCoverModal } from '../SubmittalCoverModal';
 import { BulkSubmittalsModal } from '../BreakdownSubmittalsModal';
 import { BulkEditBar } from './BulkEditBar';
 import { EditCell, Hdr, RoText } from './cells';
-import { td, th, todayBtn } from './cellStyles';
+import { td, th } from './cellStyles';
 import { hlToken } from './highlights';
 import { RowMenu } from './RowMenu';
 
@@ -141,7 +141,7 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
       )}
       {showBulkSubs && <BulkSubmittalsModal ids={targetIds} onClose={() => setShowBulkSubs(false)} />}
       {showCover && <SubmittalCoverModal items={items.filter((it) => selected[it.id])} onClose={() => setShowCover(false)} />}
-      <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'auto', maxHeight: '72vh', background: 'var(--canvas)' }}>
+      <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'auto', maxHeight: 'calc(72vh / var(--ui-scale))', background: 'var(--canvas)' }}>
         <table style={{ width: '100%', minWidth, borderCollapse: 'collapse', tableLayout: 'fixed' }}>
           <colgroup>
             {/* Row-actions (⋮) leads the row, then the select checkbox. */}
@@ -155,12 +155,18 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
             <tr style={{ background: 'var(--surface-soft)' }}>
               {editable && <th style={th} />}
               {editable && (
-                <th style={{ ...th, textAlign: 'center' }}>
-                  <input type="checkbox" checked={items.length > 0 && items.every((it) => selected[it.id])} onChange={toggleAll} style={{ width: 24, height: 24, cursor: 'pointer', accentColor: 'var(--brand-slate)' }} />
+                <th style={th}>
+                  {/* Select-all rides in the button slot, not the title slot: it's a
+                      control, so it belongs on the row where every other control sits. */}
+                  <Hdr label="">
+                    {/* `margin: 0` explícito: el margen que el navegador le da de fábrica a un
+                        checkbox lo corría 3px respecto del resto de los iconos de la fila. */}
+                    <input type="checkbox" title="Select every row in this package" checked={items.length > 0 && items.every((it) => selected[it.id])} onChange={toggleAll} style={{ width: 24, height: 24, margin: 0, cursor: 'pointer', accentColor: 'var(--brand-slate)' }} />
+                  </Hdr>
                 </th>
               )}
-              <th style={th}>Spec / Arq Ref. | Item Description</th>
-              {show('qty') && <th style={{ ...th, textAlign: 'right' }}>QTY</th>}
+              <th style={th}><Hdr label="Spec / Arq Ref. | Item Description" /></th>
+              {show('qty') && <th style={th}><Hdr label="QTY" /></th>}
               {show('um') && (
                 <th style={th}>
                   <Hdr label="U/M">
@@ -191,7 +197,7 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                 </th>
               )}
               {show('lead') && (
-                <th style={{ ...th, textAlign: 'right' }}>
+                <th style={th}>
                   <Hdr label="Lead (wks)">
                     {editable && (
                       <BulkSetPopover
@@ -218,7 +224,7 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                   </Hdr>
                 </th>
               )}
-              {show('buyby') && <th style={th}>Buy-By</th>}
+              {show('buyby') && <th style={th}><Hdr label="Buy-By" /></th>}
               {show('submittal') && (
                 <th style={th}>
                   <Hdr label="Submittal">
@@ -301,10 +307,9 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                 </th>
               )}
               {show('received') && (
-                <th style={{ ...th, textAlign: 'center' }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    {/* Supply only stops at the jobsite, so the column drops "Installation". */}
-                    {supplyOnly ? 'Delivery' : <>Delivery /<br />Installation</>}
+                <th style={th}>
+                  {/* Supply only stops at the jobsite, so the column drops "Installation". */}
+                  <Hdr label={supplyOnly ? 'Delivery' : <>Delivery /<br />Installation</>}>
                     {editable && (
                       <StagePopover
                         mode="header"
@@ -315,22 +320,16 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                         onApply={(stage, date) => actions.setItemStage(targetIds, stage, date)}
                       />
                     )}
-                  </span>
+                  </Hdr>
                 </th>
               )}
-              <th style={th}>Status</th>
+              <th style={th}><Hdr label="Status" /></th>
             </tr>
           </thead>
           <tbody>
             {items.map((it, rowIdx) => {
               const c = computeItem(it, cfg);
               const blockers = submittalBlockers(it);
-              const backorder = backorderQty(it);
-              const locked = hasOpenBackorder(it);
-              // Once the delivery log records movements it owns the stage, so ticking
-              // Received by hand would be undone the next time an entry lands — the
-              // checkbox steps aside, exactly like the modal's stage buttons do.
-              const logOwnsStage = logDrivesStage(it.deliveries);
               // OFCI (owner-furnished) and From Stock items don't need a PO date or a
               // ship/delivery date — those cells show a muted "—" instead of an editor.
               const datesNA = isOfci(it.po) || isFromStock(it.po);
@@ -442,7 +441,7 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                     <td style={{ ...td, padding: '3px 6px' }}>
                       {ofci
                         ? offCell(it.vendor, OFCI_WHY)
-                        : editable ? <VendorInput value={it.vendor} onCommit={(v) => set(it.id, { vendor: v })} quickAdd /> : <RoText>{it.vendor}</RoText>}
+                        : editable ? <VendorInput value={it.vendor} onCommit={(v) => set(it.id, { vendor: v })} /> : <RoText>{it.vendor}</RoText>}
                     </td>
                   )}
                   {show('lead') && (
@@ -519,10 +518,11 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                             {editable && (
                               <button
                                 type="button"
+                                className="icon-btn"
                                 title="Breakdown Submittals — track samples, shop drawings & other"
                                 aria-label="Breakdown Submittals"
                                 onClick={() => onBreakdownSubmittals(it.id)}
-                                style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 12, padding: '0 2px', borderRadius: 'var(--radius-sm)', opacity: comps.length ? 1 : 0.5 }}
+                                style={{ minHeight: 20, minWidth: 22, fontSize: 12 }}
                               >
                                 🧾
                               </button>
@@ -544,15 +544,13 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                   )}
                   {show('poDate') && (
                     <td style={{ ...td, padding: '3px 4px' }}>
+                      {/* No 🕒 "set to today" shortcut here (lote 48, pedido del usuario):
+                          el date picker nativo ya trae Hoy, y una fila de relojes por cada
+                          renglón le quitaba lectura a la columna. */}
                       {datesNA
                         ? <RoText mono muted>—</RoText>
                         : editable
-                          ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                              <EditCell value={it.poDate} onCommit={(v) => set(it.id, { poDate: v })} type="date" mono cellKey="poDate" />
-                              <button type="button" title="Set to today" aria-label="Set PO Date to today" onClick={() => set(it.id, { poDate: today() })} style={todayBtn}>🕒</button>
-                            </div>
-                          )
+                          ? <EditCell value={it.poDate} onCommit={(v) => set(it.id, { poDate: v })} type="date" mono cellKey="poDate" />
                           : <RoText mono>{it.poDate ? fmtMDY(it.poDate) : ''}</RoText>}
                     </td>
                   )}
@@ -581,10 +579,11 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                           {it.shipDateManual && (
                             <button
                               type="button"
+                              className="icon-btn"
                               title="Reset to auto-calculated"
                               aria-label="Reset to auto-calculated"
                               onClick={() => actions.resetShipDateAuto(it.id)}
-                              style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--muted)', fontSize: 14, padding: '2px 4px', flexShrink: 0 }}
+                              style={{ fontSize: 14, flexShrink: 0 }}
                             >
                               ↺
                             </button>
@@ -602,78 +601,39 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                   )}
                   {show('received') && (
                     <td style={{ ...td, textAlign: 'center' }}>
-                      {/* The OFCI shape of this cell: one checkbox, one question. It goes
-                          through `setItemStage` like every other stage writer — an
-                          `editItem({ installed })` here would skip the arbitration that
-                          `stagePatch` owns (lote 40), and it is exactly the shortcut the
-                          Received checkbox took that let a receipt land on OFCI material. */}
+                      {/* One control, one door (lote 49, pedido del usuario): the checkbox
+                          that used to sit here is gone. It only ever answered half the
+                          question (received yes/no) while the stage it wrote had four
+                          values, and it forced the cell to carry the whole backorder-lock /
+                          log-owns-the-stage explanation in a tooltip nobody reads. Now the
+                          stage icon is both the indicator and the only way in: the modal
+                          asks the full question — how much arrived, when, and how far up the
+                          chain it got — and `stagePatch` stays the single stage writer. */}
                       {editable && ofci ? (noAxis ? (
                         <RoText mono muted title={NO_AXIS_WHY}>—</RoText>
                       ) : (
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <input
-                            type="checkbox"
-                            title={logOwnsStage
-                              ? 'This item still follows its delivery log — clear the entries in 🔩 to set the stage by hand.'
-                              : it.installed
-                                ? `🔩 Installed${it.installedDate ? ` ${fmtMDY(it.installedDate)}` : ''} — untick to reopen it`
-                                : '🏛 OFCI — tick when it is installed (stamps today; the date is editable in 🔩)'}
-                            aria-label="Mark as Installed"
-                            checked={it.installed}
-                            disabled={logOwnsStage}
-                            onChange={(e) => actions.setItemStage([it.id], e.target.checked ? 'installed' : 'pending')}
-                            style={{ width: 24, height: 24, cursor: logOwnsStage ? 'not-allowed' : 'pointer', accentColor: 'var(--status-installed-ink)', flexShrink: 0 }}
-                          />
-                          <button
-                            type="button"
-                            title={`${it.installed ? STAGE_META.installed.label : 'Not installed'} — click for Installation (OFCI)`}
-                            aria-label={`Installation — ${it.installed ? STAGE_META.installed.label : 'not installed'}`}
-                            onClick={() => onBreakdown(it.id)}
-                            style={{
-                              border: '1px solid transparent', background: 'transparent', cursor: 'pointer', fontSize: 14,
-                              padding: '1px 4px', borderRadius: 'var(--radius-sm)', lineHeight: 1.3,
-                            }}
-                            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--hairline)'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'transparent'; }}
-                          >
-                            {it.installed ? STAGE_META.installed.icon : STAGE_META.pending.icon}
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          className="icon-btn icon-btn--lg"
+                          title={`${it.installed ? STAGE_META.installed.label : 'Not installed'} — click for Installation (OFCI)`}
+                          aria-label={`Installation — ${it.installed ? STAGE_META.installed.label : 'not installed'}`}
+                          onClick={() => onBreakdown(it.id)}
+                        >
+                          {it.installed ? STAGE_META.installed.icon : STAGE_META.pending.icon}
+                        </button>
                       )) : editable ? (
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <input
-                            type="checkbox"
-                            title={locked
-                              ? `Locked — ${backorder} still on backorder. Register the rest via Breakdown Delivery (🚚) to complete it.`
-                              : logOwnsStage
-                                ? 'This item follows its delivery log — register arrivals and releases in Breakdown Delivery (🚚).'
-                                : it.delivered && it.receivedDate
-                                  ? `Received ${fmtMDY(it.receivedDate)} — date auto-stamped, editable in the ${supplyOnly ? 'Delivery' : 'Delivery & Installation'} modal`
-                                  : 'Mark as Received / Delivered (stamps today as the received date)'}
-                            aria-label="Mark as Received / Delivered"
-                            checked={it.delivered}
-                            disabled={locked || logOwnsStage}
-                            onChange={(e) => set(it.id, { delivered: e.target.checked })}
-                            style={{ width: 24, height: 24, cursor: locked || logOwnsStage ? 'not-allowed' : 'pointer', accentColor: 'var(--success-border)', flexShrink: 0 }}
-                          />
-                          {/* The stage icon IS the indicator: 🚚 not received → 🏭 warehouse
-                              → 📍 on site → 🔩 installed. Click opens the Delivery &
-                              Installation modal (partial deliveries + stage). */}
-                          <button
-                            type="button"
-                            title={`${STAGE_META[itemStage(it)].label} — click for ${supplyOnly ? 'Delivery (partial deliveries, warehouse / on site)' : 'Delivery & Installation (partial deliveries, warehouse / on site / installed)'}`}
-                            aria-label={`${supplyOnly ? 'Delivery' : 'Delivery and installation'} — ${STAGE_META[itemStage(it)].label}`}
-                            onClick={() => onBreakdown(it.id)}
-                            style={{
-                              border: '1px solid transparent', background: 'transparent', cursor: 'pointer', fontSize: 14,
-                              padding: '1px 4px', borderRadius: 'var(--radius-sm)', lineHeight: 1.3,
-                            }}
-                            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--hairline)'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'transparent'; }}
-                          >
-                            {STAGE_META[itemStage(it)].icon}
-                          </button>
-                        </div>
+                        /* The stage icon IS the indicator: 🚚 not received → 🏭 warehouse
+                           → 📍 on site → 🔩 installed. Click opens the Delivery &
+                           Installation modal (partial deliveries + stage). */
+                        <button
+                          type="button"
+                          className="icon-btn icon-btn--lg"
+                          title={`${STAGE_META[itemStage(it)].label} — click for ${supplyOnly ? 'Delivery (partial deliveries, warehouse / on site)' : 'Delivery & Installation (partial deliveries, warehouse / on site / installed)'}`}
+                          aria-label={`${supplyOnly ? 'Delivery' : 'Delivery and installation'} — ${STAGE_META[itemStage(it)].label}`}
+                          onClick={() => onBreakdown(it.id)}
+                        >
+                          {STAGE_META[itemStage(it)].icon}
+                        </button>
                       ) : (
                         <RoText mono muted={!it.delivered && !it.installed}>
                           {it.installed
@@ -683,7 +643,7 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                               : '—'}
                         </RoText>
                       )}
-                      {/* Stage stamp under the checkbox — the date that matters at this
+                      {/* Stage stamp under the icon — the date that matters at this
                           point of the cycle (received → on-site release → installation).
                           Read-only on purpose: the cell can't say WHICH of the three dates
                           a bare date input would be writing. All three are edited, each

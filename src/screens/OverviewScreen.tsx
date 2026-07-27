@@ -247,7 +247,9 @@ interface Lane {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const LANE_LABEL_W = 156;
 const TL_INSET = 10;
-const AXIS_H = 24; // fits the bolder 14px month labels without clipping their descenders
+const HEADER_H = 24; // month strip ABOVE the lanes (a Gantt reads its scale at the top)
+const LANE_H = 40;
+const TL_RED = '#d84343'; // today / ORDER NOW — the one hue that isn't a brand token
 
 /* The legend lives in the section header next to the title, not inside the card: the
    dots mean the same thing whether or not there are lanes, and up there they read as a
@@ -256,11 +258,12 @@ function TimelineLegend() {
   const item = { display: 'inline-flex', alignItems: 'center', gap: 6 } as const;
   return (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', font: 'var(--text-caption)', color: 'var(--muted)' }}>
-      <span style={item} title="One work package's On-Site Req. date"><span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 1px var(--brand-slate)' }} /> WP Req. date</span>
-      <span style={item} title="The project's collapsed milestone — all material required, or all delivered on a supply-only project"><span style={{ width: 16, height: 16, borderRadius: '50%', background: 'var(--brand-teal)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 1px var(--brand-slate)' }} /> All material</span>
-      <span style={item} title="Field measurements visit — one per package"><span style={{ width: 9, height: 9, borderRadius: 2, transform: 'rotate(45deg)', background: 'var(--brand-orange)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 1px var(--brand-orange)' }} /> Field measure</span>
-      <span style={item} title="The package still has items past their buy-by date"><span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px #d84343' }} /> ORDER NOW</span>
-      <span style={item} title="Every item in the package is closed out"><span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--success-border)' }} /> Closed out</span>
+      <span style={item} title="One work package's On-Site Req. date"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-slate)' }} /> WP Req. date</span>
+      <span style={item} title="The project's collapsed milestone — all material required, or all delivered on a supply-only project"><span style={{ width: 17, height: 17, borderRadius: '50%', background: 'var(--brand-teal)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-slate)' }} /> All material</span>
+      <span style={item} title="Field measurements visit — one per package"><span style={{ width: 10, height: 10, borderRadius: 2, transform: 'rotate(45deg)', background: 'var(--brand-orange)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-orange)' }} /> Field measure</span>
+      <span style={item} title="The package still has items past their buy-by date"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: `0 0 0 2px ${TL_RED}` }} /> ORDER NOW</span>
+      <span style={item} title="Every item in the package is closed out"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--success-border)' }} /> Closed out</span>
+      <span style={item} title="The stretch between a project's first and last milestone — how long its material keeps landing"><span style={{ width: 22, height: 7, borderRadius: 4, background: 'color-mix(in srgb, var(--brand-slate) 28%, transparent)' }} /> Delivery window</span>
     </div>
   );
 }
@@ -276,13 +279,17 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
   const dragRef = useRef<{ laneIdx: number; msIdx: number; rect: DOMRect; startX: number; moved: boolean } | null>(null);
 
   // Fixed 6-month window anchored to today — the axis scrolls forward a day at a time.
-  const { fracT, segments, boundaries, weeks, tStart, span } = useMemo(() => {
+  // `bands` are the month SLICES (not just their labels): each one paints its own column
+  // behind the lanes, alternating, so a dot can be placed in its month without tracing it
+  // down to the axis. That zebra is what replaced the heavy month rules — the point of a
+  // chart this dense is to carry the rhythm with the least ink that still reads.
+  const { fracT, bands, boundaries, weeks, tStart, span } = useMemo(() => {
     const start = parseISO(today());
     const t0 = start.getTime();
     const tEnd = Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 6, start.getUTCDate());
     const sp = Math.max(1, tEnd - t0);
     const f = (t: number) => Math.min(1, Math.max(0, (t - t0) / sp));
-    // month 1sts inside the window → vertical rules; segments between them → month labels
+    // month 1sts inside the window → vertical rules + the cuts between bands
     const bs: number[] = [];
     let m = Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1);
     while (m <= tEnd) { const d = new Date(m); bs.push(m); m = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1); }
@@ -293,14 +300,17 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
     let w = t0 + offToMon * 86400000;
     while (w < tEnd) { wks.push(w); w += 7 * 86400000; }
     const cuts = [t0, ...bs, tEnd];
-    const segs: { mid: number; label: string }[] = [];
+    const bnds: { f0: number; f1: number; mid: number; label: string }[] = [];
     for (let i = 0; i < cuts.length - 1; i++) {
       const a = cuts[i]; const b = cuts[i + 1];
       if (b <= a) continue;
       const d = new Date(a);
-      segs.push({ mid: (f(a) + f(b)) / 2, label: d.getUTCMonth() === 0 ? `${MONTHS[0]} '${String(d.getUTCFullYear()).slice(2)}` : MONTHS[d.getUTCMonth()] });
+      bnds.push({
+        f0: f(a), f1: f(b), mid: (f(a) + f(b)) / 2,
+        label: d.getUTCMonth() === 0 ? `${MONTHS[0]} '${String(d.getUTCFullYear()).slice(2)}` : MONTHS[d.getUTCMonth()],
+      });
     }
-    return { fracT: f, segments: segs, boundaries: bs, weeks: wks, tStart: t0, span: sp };
+    return { fracT: f, bands: bnds, boundaries: bs, weeks: wks, tStart: t0, span: sp };
   }, []);
 
   const frac = (iso: string) => fracT(parseISO(iso).getTime());
@@ -323,130 +333,214 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
     );
   }
 
-  const ringOf = (m: Milestone) => (m.kind === 'fm' ? 'var(--brand-orange)' : m.orderNow ? '#d84343' : m.complete ? 'var(--success-border)' : 'var(--brand-slate)');
+  const ringOf = (m: Milestone) => (m.kind === 'fm' ? 'var(--brand-orange)' : m.orderNow ? TL_RED : m.complete ? 'var(--success-border)' : 'var(--brand-slate)');
+  /** Right edge of a band/segment, as a `right:` offset — nested calc() is legal CSS and
+   * saves carrying the track's pixel width into JS just to subtract two fractions. */
+  const rightOf = (f: number) => `calc(100% - ${leftOf(f)})`;
 
   return (
-    <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', background: 'var(--canvas)', padding: '14px 16px 8px', position: 'relative' }}>
-      <div style={{ position: 'relative' }}>
-        {/* week (Mon) + month gridlines + today, spanning all lanes (track begins after the label column) */}
-        <div style={{ position: 'absolute', left: LANE_LABEL_W, right: 0, top: 0, bottom: AXIS_H, pointerEvents: 'none', zIndex: 0 }}>
-          {/* dotted secondary lines: each Monday */}
-          {weeks.map((w) => (
-            <div key={`w${w}`} style={{ position: 'absolute', left: leftOf(fracT(w)), top: 0, bottom: 0, width: 0, borderLeft: '1px dotted var(--hairline)', opacity: 0.7 }} />
-          ))}
-          {/* solid primary lines: month starts (drawn over the week dots) */}
-          {boundaries.map((b) => (
-            <div key={b} style={{ position: 'absolute', left: leftOf(fracT(b)), top: 0, bottom: 0, width: 0, borderLeft: '2px solid var(--border-strong)' }} />
-          ))}
-          {/* today = window start → left edge; red dotted, labelled */}
-          <div style={{ position: 'absolute', left: leftOf(0), top: 0, bottom: 0, width: 0, borderLeft: '2px dotted #d84343' }} />
-          <span style={{ position: 'absolute', left: leftOf(0), top: -2, transform: 'translateX(1px)', font: 'var(--text-mono-sm)', fontWeight: 700, color: '#d84343', whiteSpace: 'nowrap', background: 'var(--canvas)', padding: '0 3px' }}>Today</span>
-        </div>
-
-        {lanes.map((lane, laneIdx) => (
-          <div key={lane.project.id} style={{ display: 'flex', alignItems: 'center', height: 40 }}>
-            <button
-              type="button"
-              onClick={() => onJumpProject(lane.project.id)}
-              title={`Open ${lane.project.name}`}
-              style={{ width: LANE_LABEL_W, flexShrink: 0, textAlign: 'left', border: 'none', background: 'transparent', cursor: 'pointer', font: 'var(--text-caption)', fontWeight: 600, color: 'var(--title)', padding: '0 10px 0 0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+    <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', background: 'var(--canvas)', padding: '6px 16px 10px', position: 'relative', boxShadow: 'var(--shadow-card)' }}>
+      {/* Month scale on TOP, where a Gantt is read. The TODAY pill is pinned to the very
+          start of the window (today IS the left edge), and the first month label is
+          clamped past it with max() so the two can never sit on each other when the
+          current month has only a few days left in view. */}
+      <div style={{ display: 'flex', height: HEADER_H, alignItems: 'flex-end' }}>
+        <span style={{ width: LANE_LABEL_W, flexShrink: 0 }} />
+        <div style={{ position: 'relative', flex: 1, height: '100%' }}>
+          {bands.map((b, i) => (
+            <span
+              key={i}
+              style={{
+                position: 'absolute', bottom: 4, transform: 'translateX(-50%)',
+                left: i === 0 ? `max(74px, ${leftOf(b.mid)})` : leftOf(b.mid),
+                font: 'var(--text-mono-sm)', fontSize: 13, fontWeight: 700, letterSpacing: 0.4,
+                color: 'var(--title)', whiteSpace: 'nowrap',
+              }}
             >
-              {lane.project.name}
-            </button>
-            <div style={{ position: 'relative', flex: 1, height: '100%' }}>
-              <div style={{ position: 'absolute', left: 0, right: 0, top: '50%', height: 2, background: 'var(--hairline)', borderRadius: 1 }} />
-              {lane.milestones.map((m, msIdx) => {
-                const big = m.kind === 'all';
-                const fm = m.kind === 'fm';
-                const d = big ? 18 : fm ? 13 : 12;
-                const isHover = hover?.laneIdx === laneIdx && hover?.msIdx === msIdx;
-                const isDragging = drag?.laneIdx === laneIdx && drag?.msIdx === msIdx;
-                const posFrac = isDragging ? frac(drag.date) : frac(m.date);
-                return (
-                  <button
-                    key={msIdx}
-                    type="button"
-                    aria-label={`${lane.project.name} — ${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}`}
-                    onMouseEnter={() => setHover({ laneIdx, msIdx })}
-                    onMouseLeave={() => setHover(null)}
-                    onPointerDown={(e) => {
-                      if (e.button !== 0) return;
-                      const track = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
-                      dragRef.current = { laneIdx, msIdx, rect: track, startX: e.clientX, moved: false };
-                      e.currentTarget.setPointerCapture(e.pointerId);
-                    }}
-                    onPointerMove={(e) => {
-                      const di = dragRef.current;
-                      if (!di || di.laneIdx !== laneIdx || di.msIdx !== msIdx) return;
-                      if (Math.abs(e.clientX - di.startX) > 3) di.moved = true;
-                      if (di.moved) setDrag({ laneIdx, msIdx, date: dateAtX(e.clientX, di.rect) });
-                    }}
-                    onPointerUp={(e) => {
-                      const di = dragRef.current;
-                      dragRef.current = null;
-                      setDrag(null);
-                      if (!di) return;
-                      if (di.moved) {
-                        const iso = dateAtX(e.clientX, di.rect);
-                        const scope = m.kind === 'all' ? `all packages in ${lane.project.name}` : m.label;
-                        const msg = `Move the ${m.kind === 'fm' ? 'Field Measurements' : 'On-Site Req.'} date for ${scope} to ${fmtMDY(iso)}?`
-                          + `\n\nThis publishes ${m.kind === 'all' ? 'those packages' : 'that package'} to the report — any other pending edits in it go too. Undo is available right after.`;
-                        if (window.confirm(msg)) onSetDate(lane.project.id, m.wpId, iso, m.kind === 'fm' ? 'fieldDate' : 'onsite');
-                      } else if (big) onJumpProject(lane.project.id);
-                      else onJumpItem(lane.project.id, m.itemId);
-                    }}
+              {b.label}
+            </span>
+          ))}
+          <span
+            title="The window starts today — everything to the right is still ahead of you."
+            style={{
+              position: 'absolute', left: 0, bottom: 3, background: TL_RED, color: '#fff',
+              font: 'var(--text-mono-sm)', fontWeight: 700, letterSpacing: 0.5,
+              padding: '1px 8px', borderRadius: 'var(--radius-pill)', whiteSpace: 'nowrap',
+            }}
+          >
+            TODAY
+          </span>
+        </div>
+      </div>
+
+      <div style={{ position: 'relative', borderTop: '1px solid var(--hairline)' }}>
+        {/* Grid layer — alternating month columns, week hairlines, month cuts and today.
+            `overflow: hidden` lets the first and last band run to the card's edge instead
+            of stopping at the inset and leaving a 10px unpainted sliver. Tooltips live in
+            the lane rows below, never in here, so nothing clippable is inside. */}
+        <div style={{ position: 'absolute', left: LANE_LABEL_W, right: 0, top: 0, bottom: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+          {bands.map((b, i) => (i % 2 === 1 ? (
+            <div
+              key={`band${i}`}
+              style={{
+                position: 'absolute', top: 0, bottom: 0,
+                left: leftOf(b.f0), right: i === bands.length - 1 ? 0 : rightOf(b.f1),
+                background: 'var(--surface-soft)',
+              }}
+            />
+          ) : null))}
+          {/* Mondays — kept, but pulled way back: the month zebra now carries the rhythm,
+              so these only have to be there when you go looking for a week. */}
+          {weeks.map((w) => (
+            <div key={`w${w}`} style={{ position: 'absolute', left: leftOf(fracT(w)), top: 0, bottom: 0, width: 0, borderLeft: '1px dotted var(--hairline)', opacity: 0.45 }} />
+          ))}
+          {boundaries.map((b) => (
+            <div key={b} style={{ position: 'absolute', left: leftOf(fracT(b)), top: 0, bottom: 0, width: 0, borderLeft: '1px solid var(--border-strong)', opacity: 0.5 }} />
+          ))}
+          <div style={{ position: 'absolute', left: leftOf(0), top: 0, bottom: 0, width: 0, borderLeft: `2px dashed ${TL_RED}` }} />
+        </div>
+        {/* Divider between the project column and the chart — makes the labels read as a
+            fixed column instead of as text that happens to be to the left. */}
+        <div style={{ position: 'absolute', left: LANE_LABEL_W - 10, top: 0, bottom: 0, width: 0, borderLeft: '1px solid var(--hairline)', pointerEvents: 'none', zIndex: 0 }} />
+
+        {lanes.map((lane, laneIdx) => {
+          // The project's delivery window: first milestone → last. One glance says how
+          // long this project keeps landing material, which the loose dots never did.
+          const fs = lane.milestones.map((m) => frac(m.date));
+          const wFrom = Math.min(...fs);
+          const wTo = Math.max(...fs);
+          return (
+            <div key={lane.project.id} className="tl-lane" style={{ display: 'flex', alignItems: 'center', height: LANE_H, position: 'relative', zIndex: 1 }}>
+              <button
+                type="button"
+                className="tl-lane-label"
+                onClick={() => onJumpProject(lane.project.id)}
+                title={`Open ${lane.project.name}`}
+                style={{ width: LANE_LABEL_W, flexShrink: 0, textAlign: 'left', border: 'none', background: 'transparent', cursor: 'pointer', font: 'var(--text-caption)', fontWeight: 600, color: 'var(--title)', padding: '0 16px 0 2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+              >
+                {lane.project.name}
+              </button>
+              <div style={{ position: 'relative', flex: 1, height: '100%' }}>
+                <div style={{ position: 'absolute', left: TL_INSET, right: TL_INSET, top: '50%', height: 3, marginTop: -1.5, background: 'var(--hairline)', borderRadius: 2 }} />
+                {fs.length > 1 && (
+                  <div
                     style={{
-                      position: 'absolute', left: leftOf(posFrac), top: '50%',
-                      transform: fm ? 'translate(-50%, -50%) rotate(45deg)' : 'translate(-50%, -50%)', width: d, height: d, borderRadius: fm ? 2 : '50%',
-                      background: big ? 'var(--brand-teal)' : fm ? 'var(--brand-orange)' : 'var(--brand-slate)',
-                      border: '2px solid var(--canvas)', boxShadow: `0 0 0 2px ${ringOf(m)}${isHover || isDragging ? ', var(--shadow-pop)' : ''}`,
-                      cursor: 'ew-resize', padding: 0, touchAction: 'none', zIndex: isDragging ? 6 : isHover ? 5 : 2,
+                      position: 'absolute', left: leftOf(wFrom), right: rightOf(wTo), top: '50%', height: 8, marginTop: -4,
+                      borderRadius: 4, background: 'color-mix(in srgb, var(--brand-slate) 28%, transparent)',
                     }}
                   />
-                );
-              })}
-              {hover?.laneIdx === laneIdx && !drag && (() => {
-                const m = lane.milestones[hover.msIdx];
-                return (
-                  <div data-timeline-tooltip style={{
-                    position: 'absolute', left: leftOf(frac(m.date)), bottom: 'calc(50% + 14px)', transform: 'translateX(-50%)',
-                    zIndex: 10, background: 'var(--brand-dark)', color: '#fff', borderRadius: 'var(--radius-sm)',
-                    padding: '7px 10px', font: 'var(--text-caption)', whiteSpace: 'nowrap', boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
+                )}
+                {/* Drag guide — a dashed rule under the cursor, so the dot lands on a date
+                    you can see against the month band instead of by feel. */}
+                {drag?.laneIdx === laneIdx && (
+                  <div style={{ position: 'absolute', left: leftOf(frac(drag.date)), top: 2, bottom: 2, width: 0, borderLeft: '2px dashed var(--brand-slate)', pointerEvents: 'none', zIndex: 3 }} />
+                )}
+                {lane.milestones.map((m, msIdx) => {
+                  const big = m.kind === 'all';
+                  const fm = m.kind === 'fm';
+                  const d = big ? 20 : fm ? 14 : 13;
+                  const isHover = hover?.laneIdx === laneIdx && hover?.msIdx === msIdx;
+                  const isDragging = drag?.laneIdx === laneIdx && drag?.msIdx === msIdx;
+                  const lifted = isHover || isDragging;
+                  const posFrac = isDragging ? frac(drag.date) : frac(m.date);
+                  const ring = ringOf(m);
+                  return (
+                    <button
+                      key={msIdx}
+                      type="button"
+                      // The ORDER NOW ring breathes (tl-dot--alert): in a portfolio of
+                      // eight lanes the static ring alone loses the race for attention.
+                      className={`tl-dot${m.orderNow ? ' tl-dot--alert' : ''}`}
+                      title={`${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)} · drag to reschedule`}
+                      aria-label={`${lane.project.name} — ${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}`}
+                      onMouseEnter={() => setHover({ laneIdx, msIdx })}
+                      onMouseLeave={() => setHover(null)}
+                      onPointerDown={(e) => {
+                        if (e.button !== 0) return;
+                        const track = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+                        dragRef.current = { laneIdx, msIdx, rect: track, startX: e.clientX, moved: false };
+                        e.currentTarget.setPointerCapture(e.pointerId);
+                      }}
+                      onPointerMove={(e) => {
+                        const di = dragRef.current;
+                        if (!di || di.laneIdx !== laneIdx || di.msIdx !== msIdx) return;
+                        if (Math.abs(e.clientX - di.startX) > 3) di.moved = true;
+                        if (di.moved) setDrag({ laneIdx, msIdx, date: dateAtX(e.clientX, di.rect) });
+                      }}
+                      onPointerUp={(e) => {
+                        const di = dragRef.current;
+                        dragRef.current = null;
+                        setDrag(null);
+                        if (!di) return;
+                        if (di.moved) {
+                          const iso = dateAtX(e.clientX, di.rect);
+                          const scope = m.kind === 'all' ? `all packages in ${lane.project.name}` : m.label;
+                          const msg = `Move the ${m.kind === 'fm' ? 'Field Measurements' : 'On-Site Req.'} date for ${scope} to ${fmtMDY(iso)}?`
+                            + `\n\nThis publishes ${m.kind === 'all' ? 'those packages' : 'that package'} to the report — any other pending edits in it go too. Undo is available right after.`;
+                          if (window.confirm(msg)) onSetDate(lane.project.id, m.wpId, iso, m.kind === 'fm' ? 'fieldDate' : 'onsite');
+                        } else if (big) onJumpProject(lane.project.id);
+                        else onJumpItem(lane.project.id, m.itemId);
+                      }}
+                      style={{
+                        position: 'absolute', left: leftOf(posFrac), top: '50%',
+                        // The scale rides in the inline transform because the ◆ carries a
+                        // rotate here too, and an inline transform always beats a :hover
+                        // rule — the hover state the component already tracks does it.
+                        transform: `translate(-50%, -50%)${fm ? ' rotate(45deg)' : ''} scale(${lifted ? 1.3 : 1})`,
+                        width: d, height: d, borderRadius: fm ? 3 : '50%',
+                        background: big ? 'var(--brand-teal)' : fm ? 'var(--brand-orange)' : 'var(--brand-slate)',
+                        border: '2px solid var(--canvas)',
+                        boxShadow: `0 0 0 2px ${ring}${lifted ? `, 0 0 0 7px color-mix(in srgb, ${ring} 22%, transparent), var(--shadow-pop)` : ''}`,
+                        cursor: 'ew-resize', padding: 0, touchAction: 'none',
+                        transition: 'transform 110ms ease, box-shadow 110ms ease',
+                        zIndex: isDragging ? 6 : isHover ? 5 : 2,
+                      }}
+                    />
+                  );
+                })}
+                {hover?.laneIdx === laneIdx && !drag && (() => {
+                  const m = lane.milestones[hover.msIdx];
+                  const f = frac(m.date);
+                  // Anchor flip: centred in the middle of the window, but pinned near its
+                  // own edge at the extremes so a tooltip at Jan or at the far month
+                  // doesn't hang outside the card. The caret follows the same anchor.
+                  const anchor = f > 0.78 ? 88 : f < 0.22 ? 12 : 50;
+                  return (
+                    <div data-timeline-tooltip style={{
+                      position: 'absolute', left: leftOf(f), bottom: 'calc(50% + 16px)', transform: `translateX(-${anchor}%)`,
+                      zIndex: 10, background: 'var(--brand-dark)', color: '#fff', borderRadius: 'var(--radius-sm)',
+                      padding: '8px 11px', font: 'var(--text-caption)', maxWidth: 280, boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
+                    }}>
+                      <div style={{ fontWeight: 700 }}>{lane.project.name}</div>
+                      {/* The collapsed milestone carries its own label — "All Delivered" for
+                          a supply-only project, "All Material Required" otherwise. */}
+                      <div style={{ color: m.kind === 'fm' ? 'var(--brand-orange)' : 'var(--brand-teal)' }}>{m.kind === 'all' ? `✅ ${m.label}` : m.kind === 'fm' ? `◆ Field measurements — ${m.label}` : m.label}</div>
+                      <div style={{ color: 'rgba(255,255,255,0.8)', font: 'var(--text-mono-sm)', whiteSpace: 'nowrap' }}>{m.kind === 'fm' ? 'Measure' : 'Req.'} {fmtMDY(m.date)}</div>
+                      {m.date < today() && <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>⏰ Req. date passed — pinned to today</div>}
+                      {m.orderNow && <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>⚠ has ORDER NOW items</div>}
+                      {!m.orderNow && m.complete && <div style={{ color: 'var(--brand-teal)', font: 'var(--text-mono-sm)' }}>✓ all items closed out</div>}
+                      <div style={{ color: 'rgba(255,255,255,0.55)', font: 'var(--text-mono-sm)', marginTop: 3 }}>↔ drag to reschedule · click to open</div>
+                      <span style={{
+                        position: 'absolute', top: '100%', left: `${anchor}%`, transform: 'translateX(-50%)',
+                        width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent',
+                        borderTop: '6px solid var(--brand-dark)',
+                      }} />
+                    </div>
+                  );
+                })()}
+                {drag?.laneIdx === laneIdx && (
+                  <div data-timeline-drag style={{
+                    position: 'absolute', left: leftOf(frac(drag.date)), bottom: 'calc(50% + 16px)', transform: 'translateX(-50%)',
+                    zIndex: 11, background: 'var(--brand-slate)', color: '#fff', borderRadius: 'var(--radius-pill)',
+                    padding: '4px 11px', font: 'var(--text-mono-sm)', fontWeight: 700, whiteSpace: 'nowrap', boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
                   }}>
-                    <div style={{ fontWeight: 700 }}>{lane.project.name}</div>
-                    {/* The collapsed milestone carries its own label — "All Delivered" for
-                        a supply-only project, "All Material Required" otherwise. */}
-                    <div style={{ color: m.kind === 'fm' ? 'var(--brand-orange)' : 'var(--brand-teal)' }}>{m.kind === 'all' ? `✅ ${m.label}` : m.kind === 'fm' ? `◆ Field measurements — ${m.label}` : m.label}</div>
-                    <div style={{ color: 'rgba(255,255,255,0.8)', font: 'var(--text-mono-sm)' }}>{m.kind === 'fm' ? 'Measure' : 'Req.'} {fmtMDY(m.date)}</div>
-                    {m.date < today() && <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>⏰ Req. date passed — pinned to today</div>}
-                    {m.orderNow && <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>⚠ has ORDER NOW items</div>}
-                    {!m.orderNow && m.complete && <div style={{ color: 'var(--brand-teal)', font: 'var(--text-mono-sm)' }}>✓ all items closed out</div>}
-                    <div style={{ color: 'rgba(255,255,255,0.55)', font: 'var(--text-mono-sm)', marginTop: 2 }}>drag to reschedule</div>
+                    {fmtMDY(drag.date)}
                   </div>
-                );
-              })()}
-              {drag?.laneIdx === laneIdx && (
-                <div data-timeline-drag style={{
-                  position: 'absolute', left: leftOf(frac(drag.date)), bottom: 'calc(50% + 14px)', transform: 'translateX(-50%)',
-                  zIndex: 11, background: 'var(--brand-slate)', color: '#fff', borderRadius: 'var(--radius-sm)',
-                  padding: '5px 9px', font: 'var(--text-mono-sm)', fontWeight: 700, whiteSpace: 'nowrap', boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
-                }}>
-                  Set to {fmtMDY(drag.date)}
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        ))}
-
-        {/* month axis */}
-        <div style={{ display: 'flex', height: AXIS_H }}>
-          <span style={{ width: LANE_LABEL_W, flexShrink: 0 }} />
-          <div style={{ position: 'relative', flex: 1 }}>
-            {segments.map((s, i) => (
-              <span key={i} style={{ position: 'absolute', left: leftOf(s.mid), top: 3, transform: 'translateX(-50%)', font: 'var(--text-mono-sm)', fontSize: 14, fontWeight: 700, color: 'var(--title)', whiteSpace: 'nowrap' }}>{s.label}</span>
-            ))}
-          </div>
-        </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -37,18 +37,20 @@ export function BulkEditBar({ count, onDelete, onClear, onHighlight, onCover }: 
           <button
             key={h.key}
             type="button"
+            className="swatch-btn"
             title={`Highlight selected ${h.label}`}
             aria-label={`Highlight selected ${h.label}`}
             onClick={() => onHighlight(h.key)}
-            style={{ width: 22, height: 22, borderRadius: 5, cursor: 'pointer', background: h.token, borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--hairline)' }}
+            style={{ width: 22, height: 22, borderRadius: 5, background: h.token, borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--border-strong)' }}
           />
         ))}
         <button
           type="button"
+          className="swatch-btn"
           title="Clear highlight on selected"
           aria-label="Clear highlight on selected"
           onClick={() => onHighlight('')}
-          style={{ width: 22, height: 22, borderRadius: 5, cursor: 'pointer', background: 'var(--canvas)', borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--hairline)', color: 'var(--muted)', fontSize: 12 }}
+          style={{ width: 22, height: 22, borderRadius: 5, background: 'var(--canvas)', borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--border-strong)', color: 'var(--muted)', fontSize: 12 }}
         >
           ✕
         </button>

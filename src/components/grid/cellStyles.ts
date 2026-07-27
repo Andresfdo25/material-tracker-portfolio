@@ -8,18 +8,16 @@ import type { CSSProperties } from 'react';
 export const th: CSSProperties = {
   textAlign: 'left', padding: '7px 10px', font: 'var(--text-caption)',
   color: 'var(--muted)', fontWeight: 600,
+  // The header stacks title over popover button (see `Hdr`), so its content grows from
+  // the TOP — the default `middle` would float a short column's title mid-cell and undo
+  // the alignment the two fixed slots buy.
+  verticalAlign: 'top',
   boxShadow: 'inset -1px 0 0 var(--hairline), inset 0 -1px 0 var(--hairline)',
   position: 'sticky', top: 0, zIndex: 3, background: 'var(--surface-soft)',
 };
 export const td: CSSProperties = {
   padding: '4px 10px', borderBottom: '1px solid var(--hairline)', verticalAlign: 'middle',
   font: 'var(--text-mono-sm)', color: 'var(--ink)', overflowWrap: 'break-word',
-};
-
-/** The 🕒 "set to today" shortcut sitting next to a date cell. */
-export const todayBtn: CSSProperties = {
-  flexShrink: 0, border: 'none', background: 'transparent', cursor: 'pointer',
-  fontSize: 13, lineHeight: 1, padding: '2px 2px', borderRadius: 'var(--radius-sm)',
 };
 
 export function cellInputStyle(extra: CSSProperties): CSSProperties {

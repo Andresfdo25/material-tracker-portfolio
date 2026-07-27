@@ -2,7 +2,19 @@
 @import './styles/colors.css';
 @import './styles/typography.css';
 @import './styles/layout.css';
+@import './styles/controls.css';
+@import './styles/timeline.css';
 
+:root {
+  /* Densidad global (lote 49, pedido del usuario): la app se veía cómoda recién con el
+   * navegador al 80%, así que ese 80% ahora es el tamaño de fábrica y el 100% del
+   * navegador ya muestra la vista compacta. `zoom` y no `transform: scale` porque
+   * reflowea de verdad — la tabla ancha vuelve a caber en vez de quedar recortada bajo
+   * un lienzo escalado. Y va sobre `body`, no sobre `#root`, para que también alcance a
+   * los popovers portaleados a <body>. Un solo número mueve toda la UI; la costura que
+   * abre (rect en px de pantalla vs. `top` en px locales) la resuelve `uiScale.ts`. */
+  --ui-scale: 0.8;
+}
 * {
   box-sizing: border-box;
 }
@@ -12,6 +24,7 @@ body {
   height: 100%;
 }
 body {
+  zoom: var(--ui-scale);
   background: var(--brand-mint);
   font-family: var(--font-text);
   color: var(--ink);
@@ -37,7 +50,10 @@ input::placeholder {
 .app {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  /* Las unidades de viewport se resuelven SIN zoom y recién después se encogen, así que
+   * un `100vh` pelado dejaría la app cubriendo el 80% de la pantalla. Dividir por la
+   * escala devuelve el alto real. Mismo motivo en los `maxHeight` de las tablas y modales. */
+  min-height: calc(100vh / var(--ui-scale));
 }
 .topbar {
   display: flex;
@@ -166,6 +182,11 @@ input::placeholder {
   margin: 0;
 }
 @media print {
+  /* El papel no se encoge: la plantilla del cliente está calibrada al ancho útil del
+   * landscape (ver la trampa de PRINT_COLS) y un 0.8 la dejaría flotando en la hoja. */
+  body {
+    zoom: 1;
+  }
   .no-print,
   .screen-only,
   .undo-snackbar {

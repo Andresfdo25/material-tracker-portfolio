@@ -47,22 +47,22 @@ export function ProjectSwitcher({
   };
 
   // Square icon button styled to match the <select> so the group reads as one control.
-  const iconBtn = (enabled: boolean): React.CSSProperties => ({
-    height: 36, width: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--hairline)', borderRadius: 'var(--radius-sm)',
-    background: 'var(--canvas)', color: enabled ? 'var(--body)' : 'var(--muted)',
-    font: '600 15px/1 var(--font-text)', cursor: enabled ? 'pointer' : 'not-allowed',
-    opacity: enabled ? 1 : 0.5, padding: 0,
-  });
+  // The box is `.icon-btn --flush`'s; this only sizes it to the select's 36px. The canvas
+  // fill lives in the class (not here) so the hover rule can still override it.
+  const iconBtn: React.CSSProperties = {
+    height: 36, width: 34, padding: 0, color: 'var(--body)', font: '600 15px/1 var(--font-text)',
+  };
 
   return (
     <span ref={ref} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
       <button
         type="button"
+        className={`icon-btn icon-btn--flush${open ? ' is-on' : ''}`}
         title="Search projects by name"
         aria-label="Search projects by name"
+        aria-expanded={open}
         onClick={openSearch}
-        style={iconBtn(true)}
+        style={iconBtn}
       >
         🔍
       </button>
@@ -83,22 +83,24 @@ export function ProjectSwitcher({
 
       <button
         type="button"
+        className="icon-btn icon-btn--flush"
         title={prev ? `Previous project — ${prev.name}` : 'No previous project'}
         aria-label="Previous project"
         onClick={() => prev && onSelect(prev.id)}
         disabled={!prev}
-        style={iconBtn(!!prev)}
+        style={iconBtn}
       >
         ▲
       </button>
 
       <button
         type="button"
+        className="icon-btn icon-btn--flush"
         title={next ? `Next project — ${next.name}` : 'No next project'}
         aria-label="Next project"
         onClick={() => next && onSelect(next.id)}
         disabled={!next}
-        style={iconBtn(!!next)}
+        style={iconBtn}
       >
         ▼
       </button>
@@ -135,15 +137,14 @@ export function ProjectSwitcher({
                 <button
                   key={p.id}
                   type="button"
+                  className="menu-item"
                   onClick={() => pick(p.id)}
                   style={{
-                    textAlign: 'left', padding: '8px 10px', borderRadius: 'var(--radius-sm)', border: 'none',
-                    background: active ? 'var(--brand-mint)' : 'transparent', cursor: 'pointer',
-                    font: active ? '600 var(--text-body)' : 'var(--text-body)', color: 'var(--ink)',
+                    padding: '8px 10px',
+                    ...(active ? { background: 'var(--brand-mint)', borderColor: 'var(--border-strong)' } : {}),
+                    font: active ? '600 var(--text-body)' : 'var(--text-body)',
                     display: 'flex', flexDirection: 'column', gap: 2,
                   }}
-                  onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = 'var(--surface-soft)'; }}
-                  onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
                 >
                   <span>{active ? '✓ ' : ''}{p.name}</span>
                   <span style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}>{p.gc}</span>

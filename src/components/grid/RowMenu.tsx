@@ -6,6 +6,7 @@ import { useApp } from '../../store/useApp';
 import { isOfci, prefixCompare } from '../../store/logic';
 import type { MaterialItem, WorkPackage } from '../../store/types';
 import { HIGHLIGHTS } from './highlights';
+import { anchorBelow, localRect, localViewport } from '../uiScale';
 
 /** Width of the row-actions popover — also used to keep it inside the viewport. */
 const MENU_POPOVER_W = 220;
@@ -17,7 +18,7 @@ export function RowMenu({ item, packages, onBreakdown, onBreakdownSubmittals }: 
   const ref = useRef<HTMLSpanElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
-  const btnRectRef = useRef<DOMRect | null>(null);
+  const btnRectRef = useRef<ReturnType<typeof localRect> | null>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
 
   useEffect(() => {
@@ -46,10 +47,11 @@ export function RowMenu({ item, packages, onBreakdown, onBreakdownSubmittals }: 
   // it (anchoring right-edge would run it off the left of the screen), clamped so a
   // narrow viewport can't push it past the right edge either.
   const openMenu = () => {
-    const r = btnRef.current!.getBoundingClientRect();
+    // En px LOCALES (ver `uiScale.ts`): el flip de abajo compara contra `offsetHeight`,
+    // que también es local, así que las dos medidas tienen que estar en el mismo espacio.
+    const r = localRect(btnRef.current!);
     btnRectRef.current = r;
-    const left = Math.min(r.left, window.innerWidth - MENU_POPOVER_W - 8);
-    setPos({ top: r.bottom + 4, left: Math.max(8, left) });
+    setPos(anchorBelow(btnRef.current!, MENU_POPOVER_W + 8));
     setOpen((o) => !o);
   };
 
@@ -60,7 +62,7 @@ export function RowMenu({ item, packages, onBreakdown, onBreakdownSubmittals }: 
     const pop = popRef.current, r = btnRectRef.current;
     if (!pop || !r) return;
     const h = pop.offsetHeight;
-    const vh = window.innerHeight;
+    const { vh } = localViewport();
     let top = r.bottom + 4;
     if (top + h > vh - 8) {
       const above = r.top - h - 4;
@@ -76,10 +78,10 @@ export function RowMenu({ item, packages, onBreakdown, onBreakdownSubmittals }: 
         type="button"
         onClick={openMenu}
         aria-label="Row actions"
-        style={{
-          border: 'none', background: open ? 'var(--surface-soft)' : 'transparent', cursor: 'pointer',
-          color: 'var(--muted)', fontSize: 16, lineHeight: 1, padding: '2px 6px', borderRadius: 'var(--radius-sm)',
-        }}
+        aria-expanded={open}
+        title="Row actions — duplicate, breakdown, highlight, move, delete"
+        className={`icon-btn icon-btn--lg icon-btn--bare${open ? ' is-on' : ''}`}
+        style={{ fontSize: 16 }}
       >
         ⋮
       </button>
@@ -88,21 +90,16 @@ export function RowMenu({ item, packages, onBreakdown, onBreakdownSubmittals }: 
           ref={popRef}
           style={{
             position: 'fixed', top: pos.top, left: pos.left, zIndex: 60, minWidth: MENU_POPOVER_W,
-            maxHeight: 'calc(100vh - 16px)', overflowY: 'auto',
+            maxHeight: 'calc(calc(100vh / var(--ui-scale)) - 16px)', overflowY: 'auto',
             background: 'var(--canvas)', border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)',
             boxShadow: 'var(--shadow-pop)', padding: 8, display: 'flex', flexDirection: 'column', gap: 6,
           }}
         >
           <button
             type="button"
+            className="menu-item"
             title="Insert a copy right below — same spec data, fresh draft (no PO / delivery state)"
             onClick={() => { actions.duplicateItem(item.id); setOpen(false); }}
-            style={{
-              textAlign: 'left', border: 'none', background: 'transparent', cursor: 'pointer',
-              color: 'var(--ink)', font: 'var(--text-body)', padding: '7px 6px', borderRadius: 'var(--radius-sm)',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
           >
             ⧉ Duplicate item
           </button>
@@ -110,26 +107,16 @@ export function RowMenu({ item, packages, onBreakdown, onBreakdownSubmittals }: 
               opens is the install one, and it says so (SPEC-delivery-watch §8). */}
           <button
             type="button"
+            className="menu-item"
             onClick={() => { onBreakdown(item.id); setOpen(false); }}
-            style={{
-              textAlign: 'left', border: 'none', background: 'transparent', cursor: 'pointer',
-              color: 'var(--ink)', font: 'var(--text-body)', padding: '7px 6px', borderRadius: 'var(--radius-sm)',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
           >
             {ofci ? '🔩 Installation…' : '🚚 Breakdown Delivery…'}
           </button>
           {!ofci && (
             <button
               type="button"
+              className="menu-item"
               onClick={() => { onBreakdownSubmittals(item.id); setOpen(false); }}
-              style={{
-                textAlign: 'left', border: 'none', background: 'transparent', cursor: 'pointer',
-                color: 'var(--ink)', font: 'var(--text-body)', padding: '7px 6px', borderRadius: 'var(--radius-sm)',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
             >
               🧾 Breakdown Submittals…
             </button>
@@ -143,19 +130,21 @@ export function RowMenu({ item, packages, onBreakdown, onBreakdownSubmittals }: 
                 <button
                   key={h.key}
                   type="button"
+                  className="swatch-btn"
                   title={`Highlight ${h.label}`}
                   aria-label={`Highlight ${h.label}`}
                   onClick={() => { actions.editItem(item.id, { highlight: on ? '' : h.key }); setOpen(false); }}
-                  style={{ width: 26, height: 26, borderRadius: 6, cursor: 'pointer', background: h.token, borderWidth: 2, borderStyle: 'solid', borderColor: on ? 'var(--ink)' : 'var(--hairline)' }}
+                  style={{ width: 26, height: 26, borderRadius: 6, background: h.token, borderWidth: 2, borderStyle: 'solid', borderColor: on ? 'var(--ink)' : 'var(--hairline)' }}
                 />
               );
             })}
             <button
               type="button"
+              className="swatch-btn"
               title="Clear highlight"
               aria-label="Clear highlight"
               onClick={() => { actions.editItem(item.id, { highlight: '' }); setOpen(false); }}
-              style={{ width: 26, height: 26, borderRadius: 6, cursor: 'pointer', background: 'var(--canvas)', borderWidth: 2, borderStyle: 'solid', borderColor: 'var(--hairline)', color: 'var(--muted)', fontSize: 13 }}
+              style={{ width: 26, height: 26, borderRadius: 6, background: 'var(--canvas)', borderWidth: 2, borderStyle: 'solid', borderColor: 'var(--hairline)', color: 'var(--muted)', fontSize: 13 }}
             >
               ✕
             </button>
@@ -176,13 +165,8 @@ export function RowMenu({ item, packages, onBreakdown, onBreakdownSubmittals }: 
           </select>
           <button
             type="button"
+            className="menu-item menu-item--danger"
             onClick={() => { actions.deleteItem(item.id); setOpen(false); }}
-            style={{
-              textAlign: 'left', border: 'none', background: 'transparent', cursor: 'pointer',
-              color: 'var(--status-order-now-ink)', font: 'var(--text-body)', padding: '7px 6px', borderRadius: 'var(--radius-sm)',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--status-order-now) 30%, white)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
           >
             🗑 Delete item
           </button>
