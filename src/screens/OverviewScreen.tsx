@@ -1,0 +1,1322 @@
+// OverviewScreen.tsx — portfolio pivot across projects (report snapshots): the status
+// matrix, a Req.-Date timeline (one lane per project), and the Buy-By table grouped
+// by project → work package with item counts. All read published report snapshots.
+import { Fragment, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useApp } from '../store/useApp';
+import { awaitingInstall, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fmtLong, fmtMDY, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, parseISO, projectClosesAtSite, submittalBlockers, today, type InstallUrgency } from '../store/logic';
+import type { ComputedItem, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
+import { StatusBadge } from '../components/ds/StatusBadge';
+import { SignatureCard } from '../components/ds/SignatureCard';
+import { Button } from '../components/ds/Button';
+
+interface Enriched {
+  i: MaterialItem;
+  pkg: WorkPackage;
+  projectId: string;
+  c: ComputedItem;
+  r: ReportSnapshot;
+  /** Package scope — supply only closes at 📍 on-site instead of 🔩 installed. */
+  supplyOnly: boolean;
+}
+
+/* status urgency — for picking the most-pressing badge in a grouped row */
+const STATUS_RANK: Record<ItemStatus, number> = {
+  'order-now': 6, 'order-soon': 5, 'needs-data': 4, planned: 3, ordered: 2, partial: 1, delivered: 0, na: -1, 'on-site': -2, installed: -2,
+};
+
+/* Install urgency → sort weight for the stage tables (worst first). */
+const URGENCY_RANK: Record<InstallUrgency, number> = { overdue: 3, 'due-soon': 2, unscheduled: 1, scheduled: 0 };
+
+/* One work package that already has material in hand — the row shared by the two stage
+ * tables (Installation status / Supply Only status). `closed` counts the items that
+ * reached the package's closing stage; `awaiting` the ones still short of it. */
+interface StageGroup {
+  key: string; projectId: string; projectName: string; wpId: string; wpLabel: string;
+  items: number; warehouse: number; site: number; closed: number; awaiting: number;
+  nextOnsite: string; urgency: InstallUrgency; itemId: string; waited: number | null;
+  supplyOnly: boolean;
+}
+interface ProjBlock { projectId: string; projectName: string; packages: StageGroup[]; awaiting: number; closed: number }
+
+/** One ⏰ late delivery — a row per ITEM, because the two ways out of it (reschedule the
+ * promised date, or confirm it arrived) are decisions about one item. */
+interface LateRow {
+  key: string; projectId: string; projectName: string; wpId: string; wpLabel: string; itemId: string;
+  description: string; vendor: string; po: string; promised: string; behind: number;
+  /** Why a plain "it arrived" would be refused here ('' = it goes through). Both cases end
+   * in `stagePatch` returning no receipt, so the button says where to do it instead of
+   * looking clickable and doing nothing. */
+  blocked: '' | 'log' | 'partial';
+}
+
+/** Packages under a project header row. Projects keep the worst-first order of their most
+ * urgent package (first appearance in the rows), not alphabetical. */
+function groupByProject(rows: StageGroup[]): ProjBlock[] {
+  const m = new Map<string, StageGroup[]>();
+  rows.forEach((g) => { const a = m.get(g.projectId); if (a) a.push(g); else m.set(g.projectId, [g]); });
+  return [...m.values()].map((gs) => ({
+    projectId: gs[0].projectId,
+    projectName: gs[0].projectName,
+    packages: gs,
+    awaiting: gs.reduce((s, g) => s + g.awaiting, 0),
+    closed: gs.reduce((s, g) => s + g.closed, 0),
+  }));
+}
+
+/** Progress toward the scope's CLOSING stage, with the counts printed inside the bar:
+ * solid = closed (installed, or on-site for a supply-only package), light = received but
+ * not closed yet, track = not in hand. The count is dropped from a segment too narrow to
+ * hold it — the tooltip always has it. */
+function InstallBar({ closed, awaiting, total, title, tone = 'install' }: { closed: number; awaiting: number; total: number; title: string; tone?: 'install' | 'site' }) {
+  const solid = tone === 'site' ? 'var(--status-on-site-ink)' : 'var(--status-installed-ink)';
+  const light = tone === 'site' ? 'var(--status-on-site)' : 'var(--status-installed)';
+  const instPct = total ? (closed / total) * 100 : 0;
+  const awaitPct = total ? (awaiting / total) * 100 : 0;
+  // Segment widths stay honest (no minimum width fudging), so whether a count fits is a
+  // question of real pixels — measure the track instead of guessing from percentages.
+  // A segment too narrow for its number renders blank; the % label and the tooltip
+  // still carry the value.
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [trackW, setTrackW] = useState(0);
+  useLayoutEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    setTrackW(el.offsetWidth);
+    // Re-measure on resize: at a narrow viewport the halves stack and the bar grows,
+    // so labels that didn't fit before should reappear.
+    const ro = new ResizeObserver(([e]) => setTrackW(e.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const fits = (pct: number, n: number) => n > 0 && (trackW * pct) / 100 >= String(n).length * 8 + 6;
+  const seg = (pct: number, bg: string, ink: string): CSSProperties => ({
+    width: `${pct}%`, height: '100%', background: bg, color: ink,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    font: 'var(--text-mono-sm)', fontWeight: 700, overflow: 'hidden',
+  });
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={title}>
+      <div ref={trackRef} style={{ flex: 1, display: 'flex', height: 20, minWidth: 84, background: 'var(--surface-strong)', borderRadius: 5, overflow: 'hidden' }}>
+        <div style={seg(instPct, solid, '#ffffff')}>{fits(instPct, closed) ? closed : ''}</div>
+        <div style={seg(awaitPct, light, solid)}>{fits(awaitPct, awaiting) ? awaiting : ''}</div>
+      </div>
+      <span style={{ font: 'var(--text-mono-sm)', color: instPct === 100 ? solid : 'var(--muted)', minWidth: 34, textAlign: 'right' }}>
+        {Math.round(instPct)}%
+      </span>
+    </div>
+  );
+}
+
+/* Submittal blocker categories (Overview tile breakdown). */
+const BLOCK_CATS = ['Product data', 'Samples', 'Shop drawings', 'Field measurements', 'Other'] as const;
+
+/* Every section title on the dashboard, in one place — the display face is 400 by
+   default and at 20px it read lighter than the tables under it. */
+const sectionTitle: CSSProperties = { font: 'var(--text-title-md)', fontWeight: 700, color: 'var(--title)' };
+
+/* Shared table cells (both stage tables, Portfolio and Buy-By). */
+const th: CSSProperties = { textAlign: 'right', padding: '9px 12px', font: 'var(--text-caption)', color: 'var(--muted)', fontWeight: 600, borderBottom: '1px solid var(--hairline)', whiteSpace: 'nowrap' };
+const thL: CSSProperties = { ...th, textAlign: 'left' };
+const td: CSSProperties = { textAlign: 'right', padding: '10px 12px', font: 'var(--text-mono)', color: 'var(--ink)', borderBottom: '1px solid var(--hairline)' };
+const tdL: CSSProperties = { ...td, textAlign: 'left', font: 'var(--text-body)' };
+
+/** The stage table, rendered twice: once for packages we install (closing stage 🔩) and
+ * once for supply-only packages (closing stage 📍). Same shape both times — supply only
+ * just drops the 🔩 column and measures the bar against "on site". */
+function StageTable({ blocks, empty, supplyOnly, collapsed, onToggle, onJumpProject, onJumpItem }: {
+  blocks: ProjBlock[];
+  empty: string;
+  supplyOnly: boolean;
+  collapsed: Record<string, boolean>;
+  onToggle: (projectId: string) => void;
+  onJumpProject: (projectId: string) => void;
+  onJumpItem: (projectId: string, itemId: string) => void;
+}) {
+  const cols = supplyOnly ? 6 : 7;
+  const closedIcon = supplyOnly ? '📍' : '🔩';
+  const closedInk = supplyOnly ? 'var(--status-on-site-ink)' : 'var(--status-installed-ink)';
+  return (
+    <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--canvas)' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ background: 'var(--surface-soft)' }}>
+            <th style={thL}>Work package</th>
+            <th style={th} title="In warehouse">🏭</th>
+            <th style={th} title={supplyOnly ? 'On site — delivered, lifecycle closed' : 'On site'}>📍</th>
+            {!supplyOnly && <th style={th} title="Installed">🔩</th>}
+            <th style={thL}>On-Site Req.</th>
+            <th style={{ ...thL, width: 132 }}>{supplyOnly ? 'On site' : 'Installed'}</th>
+            <th style={{ ...th, width: 30 }} />
+          </tr>
+        </thead>
+        <tbody>
+          {blocks.map((proj) => (
+            <Fragment key={proj.projectId}>
+              <tr
+                onClick={() => onToggle(proj.projectId)}
+                title={collapsed[proj.projectId] ? 'Expand this project' : 'Collapse this project'}
+                style={{ cursor: 'pointer', background: 'var(--surface-soft)' }}
+              >
+                <td colSpan={cols} style={{ ...tdL, font: 'var(--text-caption)', fontWeight: 700, color: 'var(--ink)' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: 'var(--muted)' }}>{collapsed[proj.projectId] ? '▸' : '▾'}</span>
+                    <span>{proj.projectName}</span>
+                    <span style={{ color: 'var(--muted)', fontWeight: 500 }}>
+                      {proj.packages.length} pkg · {proj.awaiting} awaiting · {proj.closed} {supplyOnly ? 'on site' : 'installed'}
+                    </span>
+                    <span style={{ flex: 1 }} />
+                    <button
+                      type="button"
+                      title={`Open ${proj.projectName}`}
+                      onClick={(e) => { e.stopPropagation(); onJumpProject(proj.projectId); }}
+                      style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--muted)', font: 'var(--text-caption)', fontWeight: 600, padding: '2px 4px' }}
+                    >
+                      Open ›
+                    </button>
+                  </span>
+                </td>
+              </tr>
+              {!collapsed[proj.projectId] && proj.packages.map((g) => {
+                // Urgency is carried by the On-Site cell itself (full-strength pastel +
+                // its own ink), not a row tint: those two tokens are theme-invariant, so
+                // it stays legible in dark mode — a mixed-with-canvas tint would not.
+                const tone = g.awaiting === 0 ? undefined
+                  : g.urgency === 'overdue' ? { bg: 'var(--status-order-now)', ink: 'var(--status-order-now-ink)' }
+                    : g.urgency === 'due-soon' ? { bg: 'var(--status-order-soon)', ink: 'var(--status-order-soon-ink)' }
+                      : g.urgency === 'unscheduled' ? { bg: 'var(--status-needs-data)', ink: 'var(--status-needs-data-ink)' }
+                        : undefined;
+                return (
+                  <tr
+                    key={g.key}
+                    onClick={() => onJumpItem(g.projectId, g.itemId)}
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <td style={{ ...tdL, color: 'var(--muted)' }}>{g.wpLabel}</td>
+                    <td style={{ ...td, fontWeight: g.warehouse ? 600 : 400, color: g.warehouse ? 'var(--ink)' : 'var(--muted)' }}>{g.warehouse}</td>
+                    <td style={{ ...td, color: g.site ? (supplyOnly ? closedInk : 'var(--ink)') : 'var(--muted)', fontWeight: supplyOnly && g.site ? 600 : 400 }}>{g.site}</td>
+                    {!supplyOnly && (
+                      <td style={{ ...td, color: g.closed ? closedInk : 'var(--muted)', fontWeight: g.closed ? 600 : 400 }}>{g.closed}</td>
+                    )}
+                    <td style={{ ...td, textAlign: 'left', font: 'var(--text-mono)', fontWeight: 600, background: tone?.bg, color: tone?.ink ?? 'var(--ink)', whiteSpace: 'nowrap' }}>
+                      {g.awaiting === 0 ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>— done</span>
+                        : g.nextOnsite ? `${g.urgency === 'overdue' ? '⚠ ' : ''}${fmtMDY(g.nextOnsite)}`
+                          : '❔ no date'}
+                    </td>
+                    <td style={tdL}>
+                      <InstallBar
+                        closed={g.closed}
+                        awaiting={g.awaiting}
+                        total={g.items}
+                        tone={supplyOnly ? 'site' : 'install'}
+                        title={`${g.closed} ${closedIcon} ${supplyOnly ? 'on site' : 'installed'} · ${g.awaiting} awaiting · ${g.items} in hand`}
+                      />
+                    </td>
+                    <td style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>›</td>
+                  </tr>
+                );
+              })}
+            </Fragment>
+          ))}
+          {blocks.length === 0 && (
+            <tr><td colSpan={cols} style={{ ...tdL, color: 'var(--muted)', textAlign: 'center' }}>{empty}</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ Req. timeline */
+
+interface Milestone {
+  date: string;      // ISO — the WP's earliest On-Site Req. (or Field Measure) date
+  label: string;     // work-package label (or 'All Material Required')
+  kind: 'wp' | 'all' | 'fm'; // 'fm' = Field Measurements visit — orange ◆, one per package
+  itemId: string;    // deep-link target (earliest item)
+  wpId?: string;     // package to reschedule on drag ('all' → whole project)
+  orderNow: boolean; // package has an item past its buy-by (ORDER NOW) → red ring
+  complete: boolean; // every item INSTALLED (not merely received) → green ring
+}
+interface Lane {
+  project: Project;
+  milestones: Milestone[];
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const LANE_LABEL_W = 156;
+const TL_INSET = 10;
+const AXIS_H = 24; // fits the bolder 14px month labels without clipping their descenders
+
+/* The legend lives in the section header next to the title, not inside the card: the
+   dots mean the same thing whether or not there are lanes, and up there they read as a
+   key to the chart instead of as a first row of content. */
+function TimelineLegend() {
+  const item = { display: 'inline-flex', alignItems: 'center', gap: 6 } as const;
+  return (
+    <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', font: 'var(--text-caption)', color: 'var(--muted)' }}>
+      <span style={item} title="One work package's On-Site Req. date"><span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 1px var(--brand-slate)' }} /> WP Req. date</span>
+      <span style={item} title="The project's collapsed milestone — all material required, or all delivered on a supply-only project"><span style={{ width: 16, height: 16, borderRadius: '50%', background: 'var(--brand-teal)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 1px var(--brand-slate)' }} /> All material</span>
+      <span style={item} title="Field measurements visit — one per package"><span style={{ width: 9, height: 9, borderRadius: 2, transform: 'rotate(45deg)', background: 'var(--brand-orange)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 1px var(--brand-orange)' }} /> Field measure</span>
+      <span style={item} title="The package still has items past their buy-by date"><span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px #d84343' }} /> ORDER NOW</span>
+      <span style={item} title="Every item in the package is closed out"><span style={{ width: 11, height: 11, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--success-border)' }} /> Closed out</span>
+    </div>
+  );
+}
+
+function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
+  lanes: Lane[];
+  onJumpItem: (projectId: string, itemId: string) => void;
+  onJumpProject: (projectId: string) => void;
+  onSetDate: (projectId: string, wpId: string | undefined, iso: string, field: 'onsite' | 'fieldDate') => void;
+}) {
+  const [hover, setHover] = useState<{ laneIdx: number; msIdx: number } | null>(null);
+  const [drag, setDrag] = useState<{ laneIdx: number; msIdx: number; date: string } | null>(null);
+  const dragRef = useRef<{ laneIdx: number; msIdx: number; rect: DOMRect; startX: number; moved: boolean } | null>(null);
+
+  // Fixed 6-month window anchored to today — the axis scrolls forward a day at a time.
+  const { fracT, segments, boundaries, weeks, tStart, span } = useMemo(() => {
+    const start = parseISO(today());
+    const t0 = start.getTime();
+    const tEnd = Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 6, start.getUTCDate());
+    const sp = Math.max(1, tEnd - t0);
+    const f = (t: number) => Math.min(1, Math.max(0, (t - t0) / sp));
+    // month 1sts inside the window → vertical rules; segments between them → month labels
+    const bs: number[] = [];
+    let m = Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1);
+    while (m <= tEnd) { const d = new Date(m); bs.push(m); m = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1); }
+    // Week starts (Mondays) inside the window → dotted secondary rules. getUTCDay: 0=Sun,
+    // 1=Mon…; step to the first Monday after today (today already has its own red line).
+    const wks: number[] = [];
+    const offToMon = ((1 - start.getUTCDay() + 7) % 7) || 7;
+    let w = t0 + offToMon * 86400000;
+    while (w < tEnd) { wks.push(w); w += 7 * 86400000; }
+    const cuts = [t0, ...bs, tEnd];
+    const segs: { mid: number; label: string }[] = [];
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const a = cuts[i]; const b = cuts[i + 1];
+      if (b <= a) continue;
+      const d = new Date(a);
+      segs.push({ mid: (f(a) + f(b)) / 2, label: d.getUTCMonth() === 0 ? `${MONTHS[0]} '${String(d.getUTCFullYear()).slice(2)}` : MONTHS[d.getUTCMonth()] });
+    }
+    return { fracT: f, segments: segs, boundaries: bs, weeks: wks, tStart: t0, span: sp };
+  }, []);
+
+  const frac = (iso: string) => fracT(parseISO(iso).getTime());
+  const leftOf = (f: number) => `calc(${TL_INSET}px + (100% - ${TL_INSET * 2}px) * ${f})`;
+  // Pointer x within a lane track → snapped ISO date inside the window (>= today).
+  const dateAtX = (clientX: number, rect: DOMRect) => {
+    const innerW = Math.max(1, rect.width - TL_INSET * 2);
+    let f = (clientX - (rect.left + TL_INSET)) / innerW;
+    f = Math.min(1, Math.max(0, f));
+    const spanDays = Math.max(1, Math.round(span / 86400000));
+    const days = Math.round(f * spanDays);
+    return new Date(tStart + days * 86400000).toISOString().slice(0, 10);
+  };
+
+  if (lanes.length === 0) {
+    return (
+      <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', background: 'var(--canvas)', padding: '22px 16px', textAlign: 'center', font: 'var(--text-body)', color: 'var(--muted)' }}>
+        No On-Site Req. or Field Measure dates yet. Confirm dates on a work package — each package lands as a milestone here.
+      </div>
+    );
+  }
+
+  const ringOf = (m: Milestone) => (m.kind === 'fm' ? 'var(--brand-orange)' : m.orderNow ? '#d84343' : m.complete ? 'var(--success-border)' : 'var(--brand-slate)');
+
+  return (
+    <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', background: 'var(--canvas)', padding: '14px 16px 8px', position: 'relative' }}>
+      <div style={{ position: 'relative' }}>
+        {/* week (Mon) + month gridlines + today, spanning all lanes (track begins after the label column) */}
+        <div style={{ position: 'absolute', left: LANE_LABEL_W, right: 0, top: 0, bottom: AXIS_H, pointerEvents: 'none', zIndex: 0 }}>
+          {/* dotted secondary lines: each Monday */}
+          {weeks.map((w) => (
+            <div key={`w${w}`} style={{ position: 'absolute', left: leftOf(fracT(w)), top: 0, bottom: 0, width: 0, borderLeft: '1px dotted var(--hairline)', opacity: 0.7 }} />
+          ))}
+          {/* solid primary lines: month starts (drawn over the week dots) */}
+          {boundaries.map((b) => (
+            <div key={b} style={{ position: 'absolute', left: leftOf(fracT(b)), top: 0, bottom: 0, width: 0, borderLeft: '2px solid var(--border-strong)' }} />
+          ))}
+          {/* today = window start → left edge; red dotted, labelled */}
+          <div style={{ position: 'absolute', left: leftOf(0), top: 0, bottom: 0, width: 0, borderLeft: '2px dotted #d84343' }} />
+          <span style={{ position: 'absolute', left: leftOf(0), top: -2, transform: 'translateX(1px)', font: 'var(--text-mono-sm)', fontWeight: 700, color: '#d84343', whiteSpace: 'nowrap', background: 'var(--canvas)', padding: '0 3px' }}>Today</span>
+        </div>
+
+        {lanes.map((lane, laneIdx) => (
+          <div key={lane.project.id} style={{ display: 'flex', alignItems: 'center', height: 40 }}>
+            <button
+              type="button"
+              onClick={() => onJumpProject(lane.project.id)}
+              title={`Open ${lane.project.name}`}
+              style={{ width: LANE_LABEL_W, flexShrink: 0, textAlign: 'left', border: 'none', background: 'transparent', cursor: 'pointer', font: 'var(--text-caption)', fontWeight: 600, color: 'var(--title)', padding: '0 10px 0 0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              {lane.project.name}
+            </button>
+            <div style={{ position: 'relative', flex: 1, height: '100%' }}>
+              <div style={{ position: 'absolute', left: 0, right: 0, top: '50%', height: 2, background: 'var(--hairline)', borderRadius: 1 }} />
+              {lane.milestones.map((m, msIdx) => {
+                const big = m.kind === 'all';
+                const fm = m.kind === 'fm';
+                const d = big ? 18 : fm ? 13 : 12;
+                const isHover = hover?.laneIdx === laneIdx && hover?.msIdx === msIdx;
+                const isDragging = drag?.laneIdx === laneIdx && drag?.msIdx === msIdx;
+                const posFrac = isDragging ? frac(drag.date) : frac(m.date);
+                return (
+                  <button
+                    key={msIdx}
+                    type="button"
+                    aria-label={`${lane.project.name} — ${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}`}
+                    onMouseEnter={() => setHover({ laneIdx, msIdx })}
+                    onMouseLeave={() => setHover(null)}
+                    onPointerDown={(e) => {
+                      if (e.button !== 0) return;
+                      const track = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+                      dragRef.current = { laneIdx, msIdx, rect: track, startX: e.clientX, moved: false };
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                    }}
+                    onPointerMove={(e) => {
+                      const di = dragRef.current;
+                      if (!di || di.laneIdx !== laneIdx || di.msIdx !== msIdx) return;
+                      if (Math.abs(e.clientX - di.startX) > 3) di.moved = true;
+                      if (di.moved) setDrag({ laneIdx, msIdx, date: dateAtX(e.clientX, di.rect) });
+                    }}
+                    onPointerUp={(e) => {
+                      const di = dragRef.current;
+                      dragRef.current = null;
+                      setDrag(null);
+                      if (!di) return;
+                      if (di.moved) {
+                        const iso = dateAtX(e.clientX, di.rect);
+                        const scope = m.kind === 'all' ? `all packages in ${lane.project.name}` : m.label;
+                        const msg = `Move the ${m.kind === 'fm' ? 'Field Measurements' : 'On-Site Req.'} date for ${scope} to ${fmtMDY(iso)}?`
+                          + `\n\nThis publishes ${m.kind === 'all' ? 'those packages' : 'that package'} to the report — any other pending edits in it go too. Undo is available right after.`;
+                        if (window.confirm(msg)) onSetDate(lane.project.id, m.wpId, iso, m.kind === 'fm' ? 'fieldDate' : 'onsite');
+                      } else if (big) onJumpProject(lane.project.id);
+                      else onJumpItem(lane.project.id, m.itemId);
+                    }}
+                    style={{
+                      position: 'absolute', left: leftOf(posFrac), top: '50%',
+                      transform: fm ? 'translate(-50%, -50%) rotate(45deg)' : 'translate(-50%, -50%)', width: d, height: d, borderRadius: fm ? 2 : '50%',
+                      background: big ? 'var(--brand-teal)' : fm ? 'var(--brand-orange)' : 'var(--brand-slate)',
+                      border: '2px solid var(--canvas)', boxShadow: `0 0 0 2px ${ringOf(m)}${isHover || isDragging ? ', var(--shadow-pop)' : ''}`,
+                      cursor: 'ew-resize', padding: 0, touchAction: 'none', zIndex: isDragging ? 6 : isHover ? 5 : 2,
+                    }}
+                  />
+                );
+              })}
+              {hover?.laneIdx === laneIdx && !drag && (() => {
+                const m = lane.milestones[hover.msIdx];
+                return (
+                  <div data-timeline-tooltip style={{
+                    position: 'absolute', left: leftOf(frac(m.date)), bottom: 'calc(50% + 14px)', transform: 'translateX(-50%)',
+                    zIndex: 10, background: 'var(--brand-dark)', color: '#fff', borderRadius: 'var(--radius-sm)',
+                    padding: '7px 10px', font: 'var(--text-caption)', whiteSpace: 'nowrap', boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
+                  }}>
+                    <div style={{ fontWeight: 700 }}>{lane.project.name}</div>
+                    {/* The collapsed milestone carries its own label — "All Delivered" for
+                        a supply-only project, "All Material Required" otherwise. */}
+                    <div style={{ color: m.kind === 'fm' ? 'var(--brand-orange)' : 'var(--brand-teal)' }}>{m.kind === 'all' ? `✅ ${m.label}` : m.kind === 'fm' ? `◆ Field measurements — ${m.label}` : m.label}</div>
+                    <div style={{ color: 'rgba(255,255,255,0.8)', font: 'var(--text-mono-sm)' }}>{m.kind === 'fm' ? 'Measure' : 'Req.'} {fmtMDY(m.date)}</div>
+                    {m.date < today() && <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>⏰ Req. date passed — pinned to today</div>}
+                    {m.orderNow && <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>⚠ has ORDER NOW items</div>}
+                    {!m.orderNow && m.complete && <div style={{ color: 'var(--brand-teal)', font: 'var(--text-mono-sm)' }}>✓ all items closed out</div>}
+                    <div style={{ color: 'rgba(255,255,255,0.55)', font: 'var(--text-mono-sm)', marginTop: 2 }}>drag to reschedule</div>
+                  </div>
+                );
+              })()}
+              {drag?.laneIdx === laneIdx && (
+                <div data-timeline-drag style={{
+                  position: 'absolute', left: leftOf(frac(drag.date)), bottom: 'calc(50% + 14px)', transform: 'translateX(-50%)',
+                  zIndex: 11, background: 'var(--brand-slate)', color: '#fff', borderRadius: 'var(--radius-sm)',
+                  padding: '5px 9px', font: 'var(--text-mono-sm)', fontWeight: 700, whiteSpace: 'nowrap', boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
+                }}>
+                  Set to {fmtMDY(drag.date)}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {/* month axis */}
+        <div style={{ display: 'flex', height: AXIS_H }}>
+          <span style={{ width: LANE_LABEL_W, flexShrink: 0 }} />
+          <div style={{ position: 'relative', flex: 1 }}>
+            {segments.map((s, i) => (
+              <span key={i} style={{ position: 'absolute', left: leftOf(s.mid), top: 3, transform: 'translateX(-50%)', font: 'var(--text-mono-sm)', fontSize: 14, fontWeight: 700, color: 'var(--title)', whiteSpace: 'nowrap' }}>{s.label}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------------- overview */
+
+export function OverviewScreen() {
+  const { db, nav, actions, setActiveProjectId, thresholdsFor, jumpToItem } = useApp();
+  const [groupMode, setGroupMode] = useState<'wp' | 'project'>('wp');
+  // Installation table: pending-only by default (the actionable list); toggle to see
+  // every package that has material in hand, including the ones fully installed.
+  const [installPending, setInstallPending] = useState(true);
+  // Collapsed project groups in the Installation table (default: expanded).
+  const [installCollapsed, setInstallCollapsed] = useState<Record<string, boolean>>({});
+  const toggleInstall = (id: string) => setInstallCollapsed((c) => ({ ...c, [id]: !c[id] }));
+  // Same pair of controls for the Supply Only table (packages that close on site).
+  const [supplyPending, setSupplyPending] = useState(true);
+  const [supplyCollapsed, setSupplyCollapsed] = useState<Record<string, boolean>>({});
+  const toggleSupply = (id: string) => setSupplyCollapsed((c) => ({ ...c, [id]: !c[id] }));
+  // ⏰ Late deliveries — the row whose promised date is being edited inline, if any.
+  const [reschedule, setReschedule] = useState<{ id: string; date: string } | null>(null);
+  // ⏰ Late deliveries grouping — its OWN state, not shared with Buy-By: the two tables sit
+  // side by side and answer different questions, so one toggle driving both would move a
+  // table the user wasn't looking at. Grouping only adds project header rows; the item
+  // rows stay whole, because the two ways out of a late delivery are per item.
+  const [lateGroup, setLateGroup] = useState<'wp' | 'project'>('wp');
+  const [lateCollapsed, setLateCollapsed] = useState<Record<string, boolean>>({});
+
+  const activeProjects = db.projects
+    .filter((p) => !p.archived)
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  const activeIds = new Set(activeProjects.map((p) => p.id));
+  // Portfolio grouping is a PROJECT decision, but a project created before the flag
+  // existed can only say "supply only" by having all its packages marked — so that
+  // counts too (projectClosesAtSite).
+  const pkgsOf = (projectId: string) => db.packages.filter((p) => p.projectId === projectId);
+  const supplyOnlyProject = (p: Project) => projectClosesAtSite(p, pkgsOf(p.id));
+  // The whole supply-only layer stays invisible until something is actually marked as
+  // such — no empty table, no section headers for a portfolio that always installs.
+  const hasSupplyOnly = activeProjects.some(supplyOnlyProject) || db.packages.some((p) => p.supplyOnly && activeIds.has(p.projectId));
+  const enriched: Enriched[] = db.items
+    .filter((i): i is MaterialItem & { report: ReportSnapshot } => !!i.report)
+    .map((i) => {
+      const pkg = db.packages.find((p) => p.id === i.wpId)!;
+      const t = thresholdsFor(pkg.projectId);
+      const supplyOnly = closesAtSite(pkg, db.projects.find((p) => p.id === pkg.projectId));
+      return { i, pkg, projectId: pkg.projectId, c: computeItem(i.report, { window: t.window, supplyOnly }), r: i.report, supplyOnly };
+    })
+    .filter((x) => activeIds.has(x.projectId));
+
+  const portfolio = activeProjects.map((p) => {
+    const rows = enriched.filter((x) => x.projectId === p.id);
+    // `closed` / `awaiting` are measured against each PACKAGE's own closing stage, so a
+    // mixed project still reads on one bar: its supply-only packages close on site and
+    // its supply-and-install packages close when installed.
+    const t2 = { project: p, items: rows.length, orderNow: 0, soon: 0, needs: 0, planned: 0, ordered: 0, partial: 0, closed: 0, awaiting: 0, na: 0 };
+    rows.forEach((x) => {
+      const s = x.c.status;
+      if (s === 'order-now') t2.orderNow++;
+      else if (s === 'order-soon') t2.soon++;
+      else if (s === 'needs-data') t2.needs++;
+      else if (s === 'planned') t2.planned++;
+      else if (s === 'ordered') t2.ordered++;
+      else if (s === 'partial') t2.partial++;
+      else if (s === 'na') t2.na++;
+      if (isClosed(x.r, x.supplyOnly)) t2.closed++;
+      else if (awaitingInstall(x.r, x.supplyOnly)) t2.awaiting++;
+    });
+    return t2;
+  });
+  const totalOrderNow = portfolio.reduce((s, p) => s + p.orderNow, 0);
+  const portfolioSections = hasSupplyOnly
+    ? [
+        { title: '📍 SUPPLY ONLY', rows: portfolio.filter((p) => supplyOnlyProject(p.project)) },
+        { title: '🔩 SUPPLY AND INSTALL', rows: portfolio.filter((p) => !supplyOnlyProject(p.project)) },
+      ].filter((s) => s.rows.length > 0)
+    : [{ title: 'all', rows: portfolio }];
+
+  // ---- Overview indicators (all off published report snapshots) ----
+  const statusTotals = { 'order-now': 0, 'order-soon': 0, 'needs-data': 0, planned: 0, ordered: 0, partial: 0, delivered: 0, 'on-site': 0, installed: 0, na: 0 } as Record<ItemStatus, number>;
+  enriched.forEach((x) => { statusTotals[x.c.status]++; });
+  const orderable = (s: ItemStatus) => s === 'needs-data' || s === 'planned' || s === 'order-soon' || s === 'order-now';
+  // Blocked by submittal — items still needing a PO with an unapproved component, broken
+  // down by which component blocks them (product data / samples / shop / field / other).
+  const blockedByCat: Record<string, number> = { 'Product data': 0, Samples: 0, 'Shop drawings': 0, 'Field measurements': 0, Other: 0 };
+  let blockedTotal = 0;
+  enriched.forEach((x) => {
+    if (!orderable(x.c.status)) return;
+    const bl = submittalBlockers(x.r);
+    if (bl.length) blockedTotal++;
+    bl.forEach((b) => { const k = b.startsWith('Other') ? 'Other' : b; if (k in blockedByCat) blockedByCat[k]++; });
+  });
+  const blockedNow = enriched.filter((x) => x.c.status === 'order-now' && !x.c.approved).length;
+  // Data completeness — what's missing that stalls the buy-by calc. Scoped to the items
+  // actually IN needs-data, because this pair is the breakdown of that tile's number and
+  // has to add up against it. Counting every item instead over-reports: an OFCI row has
+  // no lead time by design (it never enters our procurement flow) and an item that has
+  // already been ordered no longer needs one — neither is missing data, and both used to
+  // land in this line and make the tile look inconsistent with its own subtitle.
+  const incomplete = enriched.filter((x) => x.c.status === 'needs-data');
+  const missingLead = incomplete.filter((x) => x.r.lead === '' || x.r.lead == null || isNaN(Number(x.r.lead))).length;
+  const missingOnsite = incomplete.filter((x) => !x.r.onsite).length;
+  const needsData = statusTotals['needs-data'];
+
+  // ---- Awaiting close-out: the blind spot between "received" and "closed" ----
+  // Material that is paid for and in hand but hasn't reached its last stage. Split by
+  // where it physically is (warehouse vs jobsite) and by how urgent the move is. A
+  // supply-only item drops out as soon as it's on site — that IS its wall.
+  const awaiting = enriched.filter((x) => awaitingInstall(x.r, x.supplyOnly));
+  const awaitingUrgency = (x: Enriched) => installUrgency(x.r, { window: thresholdsFor(x.projectId).window });
+  const inWarehouse = awaiting.filter((x) => itemStage(x.r) === 'warehouse').length;
+  const onSite = awaiting.filter((x) => itemStage(x.r) === 'on-site').length;
+  const installOverdue = awaiting.filter((x) => awaitingUrgency(x) === 'overdue').length;
+  const installUnscheduled = awaiting.filter((x) => awaitingUrgency(x) === 'unscheduled').length;
+
+  // Timeline lanes — one per project; a milestone per work package (its earliest
+  // On-Site date). If every package shares the same date, collapse to one big
+  // "All Material Required" milestone that opens the project.
+  //
+  // Unlike the tables above, the timeline reads the LIVE working draft (not the
+  // published report) so the global date button, the per-package header, and dragging
+  // a milestone all reschedule the dot in place, before any Save to report.
+  const timelineItems = db.items
+    .map((i) => {
+      const pkg = db.packages.find((p) => p.id === i.wpId);
+      if (!pkg || !activeIds.has(pkg.projectId)) return null;
+      const t = thresholdsFor(pkg.projectId);
+      const supplyOnly = closesAtSite(pkg, db.projects.find((p) => p.id === pkg.projectId));
+      return { i, pkg, c: computeItem(i, { window: t.window, supplyOnly }), supplyOnly };
+    })
+    .filter((x): x is { i: MaterialItem; pkg: WorkPackage; c: ComputedItem; supplyOnly: boolean } => x !== null);
+
+  const lanes: Lane[] = activeProjects.map((project) => {
+    const withDate = timelineItems.filter((x) => x.pkg.projectId === project.id && x.i.onsite);
+    const byWp = new Map<string, typeof withDate>();
+    withDate.forEach((x) => {
+      const g = byWp.get(x.pkg.id);
+      if (g) g.push(x); else byWp.set(x.pkg.id, [x]);
+    });
+    const wpMilestones: Milestone[] = [...byWp.values()].map((xs) => {
+      const earliest = [...xs].sort((a, b) => a.i.onsite.localeCompare(b.i.onsite))[0];
+      return {
+        date: earliest.i.onsite, label: earliest.pkg.label, kind: 'wp' as const, itemId: earliest.i.id, wpId: earliest.pkg.id,
+        orderNow: xs.some((x) => x.c.status === 'order-now'),
+        // Green ring = every item reached its scope's closing stage (installed, or merely
+        // on site when the package is supply only).
+        complete: xs.every((x) => isClosed(x.i, x.supplyOnly)),
+      };
+    }).sort((a, b) => a.date.localeCompare(b.date));
+    // Overdue Req. dates only stay on the timeline if the package still has an ORDER NOW
+    // item (buy it now); the timeline pins them to today. Everything else past is dropped.
+    const todayISO = today();
+    const visible = wpMilestones.filter((m) => m.date >= todayISO || m.orderNow);
+    // Field Measurements — one orange ◆ per package with a fieldDate (earliest wins if
+    // items disagree; the toolbar popover nudges toward one date per package). Past
+    // visits drop off. Kept out of the "All Material Required" collapse on purpose.
+    const fmByWp = new Map<string, typeof timelineItems>();
+    timelineItems.filter((x) => x.pkg.projectId === project.id && x.i.fieldDate).forEach((x) => {
+      const g = fmByWp.get(x.pkg.id);
+      if (g) g.push(x); else fmByWp.set(x.pkg.id, [x]);
+    });
+    const fmMilestones: Milestone[] = [...fmByWp.values()].map((xs) => {
+      const earliest = [...xs].sort((a, b) => a.i.fieldDate.localeCompare(b.i.fieldDate))[0];
+      return { date: earliest.i.fieldDate, label: earliest.pkg.label, kind: 'fm' as const, itemId: earliest.i.id, wpId: earliest.pkg.id, orderNow: false, complete: false };
+    }).filter((m) => m.date >= todayISO).sort((a, b) => a.date.localeCompare(b.date));
+    if (visible.length === 0 && fmMilestones.length === 0) return { project, milestones: [] };
+    const allSame = visible.length > 0 && visible.every((m) => m.date === visible[0].date);
+    const milestones: Milestone[] = allSame && visible.length > 1
+      ? [{
+          // A supply-only project's collapsed milestone is the delivery, not the install.
+          date: visible[0].date, label: supplyOnlyProject(project) ? 'All Delivered' : 'All Material Required',
+          kind: 'all', itemId: visible[0].itemId, wpId: undefined,
+          orderNow: withDate.some((x) => x.c.status === 'order-now'),
+          complete: withDate.every((x) => isClosed(x.i, x.supplyOnly)),
+        }]
+      : visible;
+    return { project, milestones: [...milestones, ...fmMilestones] };
+  }).filter((l) => l.milestones.length > 0);
+
+  // Drag / button reschedule — set the same On-Site (or Field Measure) date on a
+  // package's items (or the whole project for the collapsed "all" milestone). Edits
+  // the draft live.
+  const setMilestoneDate = (projectId: string, wpId: string | undefined, iso: string, field: 'onsite' | 'fieldDate') => {
+    const ids = wpId
+      ? db.items.filter((i) => i.wpId === wpId).map((i) => i.id)
+      : db.packages.filter((p) => p.projectId === projectId).flatMap((p) => db.items.filter((i) => i.wpId === p.id).map((i) => i.id));
+    if (!ids.length) return;
+    actions.bulkEditItems(ids, field === 'fieldDate' ? { fieldDate: iso } : { onsite: iso });
+    // Confirming the drag IS the save: Overview reads report snapshots, so leaving the
+    // change in the draft would show the dot in its new place while every table around
+    // it still reported the old date until someone went to the Material List and hit
+    // Save. Both calls are functional setDb updates, so the publish sees the new date;
+    // the undo snapshot is taken before either, so one Undo reverts the whole thing.
+    if (wpId) actions.savePackageToReport(wpId);
+    else actions.saveAllToReport(projectId);
+  };
+
+  // ---- ⏰ Late deliveries: promised by the vendor, past that date, still not here ----
+  // The third clock (SPEC-delivery-watch). 'unknown' — bought with no promised date — is
+  // deliberately NOT counted here (§5.3): there can be many of them and they would drown
+  // the handful that are genuinely late. They keep reading as "Confirm Date" in the list.
+  const lateRows: LateRow[] = enriched
+    .filter((x) => deliveryWatch(x.r, { window: thresholdsFor(x.projectId).window }) === 'late')
+    .map((x) => ({
+      key: x.i.id, projectId: x.projectId, projectName: db.projects.find((p) => p.id === x.projectId)?.name ?? '',
+      wpId: x.pkg.id, wpLabel: x.pkg.label, itemId: x.i.id, description: x.r.description, vendor: x.r.vendor, po: x.r.po,
+      promised: x.r.shipDate, behind: daysLate(x.r) ?? 0,
+      // `deliveries` is read off the DRAFT, not the snapshot — it isn't a report field, and
+      // the question is whether the write would land at all: `stagePatch` refuses a manual
+      // stage once the log owns it. A half-delivered item is refused for the other reason
+      // (batch 43): "it arrived" there means the REST arrived, which is a quantity, and
+      // quantities are registered in Breakdown Delivery.
+      blocked: (logDrivesStage(x.i.deliveries) ? 'log' : hasOpenBackorder(x.r) ? 'partial' : '') as LateRow['blocked'],
+    }))
+    .sort((a, b) => b.behind - a.behind || a.projectName.localeCompare(b.projectName));
+  const lateRef = useRef<HTMLDivElement>(null);
+  // Project header rows over the item rows (same shape as the stage tables). The grouped
+  // dimension leaves the body — with the project already in the header, repeating it on
+  // every row is width the narrow column can't spare.
+  const lateBlocks: { projectId: string; projectName: string; rows: LateRow[]; worst: number }[] = (() => {
+    const m = new Map<string, LateRow[]>();
+    lateRows.forEach((r) => { const a = m.get(r.projectId); if (a) a.push(r); else m.set(r.projectId, [r]); });
+    return [...m.values()].map((rs) => ({
+      projectId: rs[0].projectId, projectName: rs[0].projectName, worst: Math.max(...rs.map((r) => r.behind)),
+      // Project · Work package keeps the package column and sorts the rows by it first, so
+      // the packages read as blocks inside their project.
+      rows: lateGroup === 'wp' ? [...rs].sort((a, b) => a.wpLabel.localeCompare(b.wpLabel) || b.behind - a.behind) : rs,
+    }));
+  })();
+  const allLateCollapsed = lateBlocks.length > 0 && lateBlocks.every((b) => lateCollapsed[b.projectId]);
+  const lateCols = lateGroup === 'wp' ? 5 : 4;
+
+  // ---- The two ways out of a late delivery, from the row itself (spec §3 / Fase 4) ----
+  // §5.5, answered: Overview writes exactly like the timeline drag does. It reads report
+  // snapshots, so leaving the change in the draft would show the row resolved while every
+  // table around it still reported the old value until someone opened the Material List
+  // and hit Save — so confirming IS the save, and the confirm text says so. Both calls are
+  // functional setDb updates and the undo snapshot is taken before either, so one Undo
+  // reverts the whole thing. There is deliberately no third way out: no snooze, no
+  // dismiss — either the date moved or the material is here.
+  const applyReschedule = (r: LateRow, iso: string) => {
+    if (!iso || iso === r.promised) { setReschedule(null); return; }
+    const ok = window.confirm(
+      `Reschedule "${r.description}" — new Anticipated Ship/Delivery date ${fmtMDY(iso)}?`
+      + `\n\nThis publishes ${r.wpLabel} to the report — any other pending edits in it go too. Undo is available right after.`,
+    );
+    if (!ok) return;
+    // Writing shipDate by hand sets shipDateManual (applyItemPatch), which is exactly
+    // right here: the vendor gave a real date and poDate + lead must not overwrite it.
+    actions.editItem(r.itemId, { shipDate: iso });
+    actions.savePackageToReport(r.wpId);
+    setReschedule(null);
+  };
+  const confirmArrived = (r: LateRow) => {
+    const ok = window.confirm(
+      `Mark "${r.description}" as received?`
+      + `\n\nIt lands in 🏭 the warehouse stamped today — move it on to 📍 on site or 🔩 installed from the Material List.`
+      + `\n\nThis publishes ${r.wpLabel} to the report — any other pending edits in it go too. Undo is available right after.`,
+    );
+    if (!ok) return;
+    // The stage has one writer (lote 40): never an editItem({ delivered }) from here.
+    actions.setItemStage([r.itemId], 'warehouse');
+    actions.savePackageToReport(r.wpId);
+  };
+
+  // Buy-By within 14 days, grouped by project → work package.
+  const due = enriched.filter((x) => x.c.buyby && x.c.days != null && x.c.days <= 14 && x.c.status !== 'ordered' && x.c.status !== 'partial' && x.c.status !== 'delivered');
+
+  interface WpGroup { key: string; projectId: string; projectName: string; wpId: string; wpLabel: string; count: number; nearest: string; latest: string; overdue: boolean; status: ItemStatus; itemId: string; }
+  interface ProjGroup { projectId: string; projectName: string; packages: number; count: number; nearest: string; latest: string; overdue: boolean; status: ItemStatus; }
+
+  const wpGroups: WpGroup[] = (() => {
+    const m = new Map<string, Enriched[]>();
+    due.forEach((x) => {
+      const k = `${x.projectId}|${x.pkg.id}`;
+      const g = m.get(k); if (g) g.push(x); else m.set(k, [x]);
+    });
+    return [...m.entries()].map(([key, xs]) => {
+      const sorted = [...xs].sort((a, b) => a.c.buyby.localeCompare(b.c.buyby));
+      const top = [...xs].sort((a, b) => STATUS_RANK[b.c.status] - STATUS_RANK[a.c.status])[0];
+      const project = db.projects.find((p) => p.id === xs[0].projectId)!;
+      return {
+        key, projectId: xs[0].projectId, projectName: project.name, wpId: xs[0].pkg.id, wpLabel: xs[0].pkg.label,
+        count: xs.length, nearest: sorted[0].c.buyby, latest: sorted[sorted.length - 1].c.buyby,
+        overdue: sorted[0].c.days != null && sorted[0].c.days <= 0, status: top.c.status, itemId: sorted[0].i.id,
+      };
+    }).sort((a, b) => a.nearest.localeCompare(b.nearest) || a.projectName.localeCompare(b.projectName));
+  })();
+
+  const projGroups: ProjGroup[] = (() => {
+    const m = new Map<string, WpGroup[]>();
+    wpGroups.forEach((g) => { const a = m.get(g.projectId); if (a) a.push(g); else m.set(g.projectId, [g]); });
+    return [...m.values()].map((gs) => {
+      const nearest = gs.map((g) => g.nearest).sort()[0];
+      const latest = gs.map((g) => g.latest).sort().slice(-1)[0];
+      const top = [...gs].sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status])[0];
+      return {
+        projectId: gs[0].projectId, projectName: gs[0].projectName, packages: gs.length,
+        count: gs.reduce((s, g) => s + g.count, 0), nearest, latest,
+        overdue: gs.some((g) => g.overdue), status: top.status,
+      };
+    }).sort((a, b) => a.nearest.localeCompare(b.nearest) || a.projectName.localeCompare(b.projectName));
+  })();
+
+  // Stage status by work package — every package that already has material in hand.
+  // Which TABLE a package shows up in is decided by the PACKAGE, not the project: a
+  // supply-only package goes to "Supply Only status" even inside a supply-and-install
+  // project, and vice versa. (The project's flag only drives the Portfolio grouping.)
+  const stageGroups: StageGroup[] = (() => {
+    const m = new Map<string, Enriched[]>();
+    enriched.forEach((x) => {
+      if (!awaitingInstall(x.r, x.supplyOnly) && !isClosed(x.r, x.supplyOnly)) return; // nothing in hand yet
+      const k = `${x.projectId}|${x.pkg.id}`;
+      const g = m.get(k); if (g) g.push(x); else m.set(k, [x]);
+    });
+    return [...m.entries()].map(([key, xs]) => {
+      const supplyOnly = xs[0].supplyOnly;
+      const pend = xs.filter((x) => awaitingInstall(x.r, x.supplyOnly));
+      const closed = xs.filter((x) => isClosed(x.r, x.supplyOnly)).length;
+      // The group's urgency and target date come from the items still pending.
+      const dated = pend.filter((x) => x.r.onsite).sort((a, b) => a.r.onsite.localeCompare(b.r.onsite));
+      const worst = pend.map(awaitingUrgency).sort((a, b) => URGENCY_RANK[b] - URGENCY_RANK[a])[0] ?? 'scheduled';
+      const waits = pend.map((x) => daysWaiting(x.r)).filter((d): d is number => d != null);
+      return {
+        key, projectId: xs[0].projectId, projectName: db.projects.find((p) => p.id === xs[0].projectId)!.name,
+        wpId: xs[0].pkg.id, wpLabel: xs[0].pkg.label,
+        items: xs.length,
+        warehouse: pend.filter((x) => itemStage(x.r) === 'warehouse').length,
+        // 📍 always means "on site": still pending there when we install, already closed
+        // out when we don't.
+        site: supplyOnly ? closed : pend.filter((x) => itemStage(x.r) === 'on-site').length,
+        closed,
+        awaiting: pend.length,
+        nextOnsite: dated[0]?.r.onsite ?? '',
+        urgency: worst,
+        itemId: (dated[0] ?? pend[0] ?? xs[0]).i.id,
+        waited: waits.length ? Math.max(...waits) : null,
+        supplyOnly,
+      };
+    }).sort((a, b) =>
+      URGENCY_RANK[b.urgency] - URGENCY_RANK[a.urgency]
+      || (a.nextOnsite || '9999').localeCompare(b.nextOnsite || '9999')
+      || a.projectName.localeCompare(b.projectName));
+  })();
+  const installRows = (installPending ? stageGroups.filter((g) => g.awaiting > 0) : stageGroups).filter((g) => !g.supplyOnly);
+  const supplyRows = (supplyPending ? stageGroups.filter((g) => g.awaiting > 0) : stageGroups).filter((g) => g.supplyOnly);
+  const installByProject = groupByProject(installRows);
+  const supplyByProject = groupByProject(supplyRows);
+  const allInstallCollapsed = installByProject.length > 0 && installByProject.every((p) => installCollapsed[p.projectId]);
+  const allSupplyCollapsed = supplyByProject.length > 0 && supplyByProject.every((p) => supplyCollapsed[p.projectId]);
+
+  // Portfolio count columns: tighter side padding so the Complete bar (which has to fit
+  // its numbers inside) keeps a usable width at half-screen.
+  // whiteSpace normal so "ORDER NOW" / "Needs data" wrap to two lines instead of forcing
+  // the table past its half-width container.
+  const thN: CSSProperties = { ...th, padding: '9px 6px', whiteSpace: 'normal' };
+  const tdN: CSSProperties = { ...td, padding: '10px 6px' };
+  // Tiles are a single bordered block beside the title (mockup 07242026): one wide
+  // "Blocked by submittal" on top, then a 2×2 grid sharing hairline dividers.
+  const tile: CSSProperties = { textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 4, padding: '12px 14px', background: 'var(--canvas)', border: 'none', cursor: 'pointer' };
+  const tileLabel: CSSProperties = { font: 'var(--text-caption)', color: 'var(--muted)', fontWeight: 600 };
+  const tileNum: CSSProperties = { font: 'var(--text-display-md)', color: 'var(--title)', fontWeight: 600, lineHeight: 1.1 };
+  const tileSub: CSSProperties = { font: 'var(--text-caption)', color: 'var(--muted)' };
+  const jumpProject = (id: string) => { setActiveProjectId(id); nav('list'); };
+  // Square action button for the ⏰ Resolve column — one glyph, no label.
+  const iconBtn: CSSProperties = { padding: 0, width: 30, height: 28, minWidth: 30, fontSize: 14, lineHeight: 1 };
+  const buyByCell = (overdue: boolean): CSSProperties => ({ ...td, textAlign: 'left', font: 'var(--text-mono)', fontWeight: 600, color: overdue ? 'var(--status-order-now-ink)' : 'var(--ink)' });
+  const rangeText = (nearest: string, latest: string) => (nearest === latest ? fmtMDY(nearest) : `${fmtMDY(nearest)} → ${fmtMDY(latest)}`);
+
+  // One group-by control, two independent tables (Buy-By and Late deliveries) — same
+  // wording both times so the toggle reads as the same idea in both places.
+  const groupBtns = (value: 'wp' | 'project', set: (m: 'wp' | 'project') => void) => (
+    <>
+      <span style={{ font: 'var(--text-caption)', color: 'var(--muted)', fontWeight: 600 }}>Group by:</span>
+      {([['wp', 'Project · Work package'], ['project', 'Project']] as const).map(([mode, label]) => (
+        <Button
+          key={mode}
+          size="sm"
+          variant={value === mode ? 'primary' : 'secondary'}
+          onClick={() => set(mode)}
+          style={{ padding: '5px 12px' }}
+        >
+          {label}
+        </Button>
+      ))}
+    </>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      {/* 1. Masthead + counters (left) · timeline (right) — layout mockup 07242026 */}
+      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ flex: '1 1 340px', minWidth: 300, maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
+              <div style={{ font: 'var(--text-display-xl)', fontSize: 60, lineHeight: 1.05, color: 'var(--title)', fontWeight: 600 }}>Overview</div>
+              <div style={{ font: 'var(--text-title-sm)', color: 'var(--muted)', fontWeight: 500 }}>{fmtLong(today())}</div>
+            </div>
+            <div style={{ font: 'var(--text-title-sm)', color: 'var(--muted)', marginTop: 6 }}>Portfolio — all projects, report snapshots</div>
+          </div>
+
+          {/* One block: the wide Blocked tile, then a 2×2 grid sharing dividers. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <button
+              type="button"
+              onClick={() => nav('submittals')}
+              style={{ ...tile, borderWidth: 2, borderStyle: 'solid', borderColor: 'var(--brand-orange)', borderRadius: 'var(--radius-md)' }}
+            >
+              <div style={tileLabel}>⛔ Blocked by submittal</div>
+              <div style={tileNum}>{blockedTotal}</div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 2 }}>
+                {BLOCK_CATS.filter((c) => blockedByCat[c] > 0).map((c) => (
+                  <span key={c} style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}>{c} <strong style={{ color: 'var(--ink)' }}>{blockedByCat[c]}</strong></span>
+                ))}
+                {blockedTotal === 0 && <span style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}>none blocked — all clear</span>}
+              </div>
+              {blockedNow > 0 && <div style={{ ...tileSub, color: 'var(--status-order-now-ink)', fontWeight: 600 }}>⚠ {blockedNow} already past buy-by — expedite</div>}
+            </button>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
+              <button type="button" onClick={() => nav('list')} style={{ ...tile, borderRight: '1px solid var(--hairline)', borderBottom: '1px solid var(--hairline)' }}>
+                <div style={tileLabel}>🟠 Order soon</div>
+                <div style={tileNum}>{statusTotals['order-soon']}</div>
+                <div style={tileSub}>within the order-soon window</div>
+              </button>
+              <button type="button" onClick={() => nav('list')} style={{ ...tile, borderBottom: '1px solid var(--hairline)' }}>
+                <div style={tileLabel}>{hasSupplyOnly ? '🏭 Awaiting site / install' : '🏭 Awaiting installation'}</div>
+                <div style={tileNum}>{awaiting.length}</div>
+                <div style={tileSub}>{inWarehouse} in warehouse · {onSite} on site</div>
+                {(installOverdue > 0 || installUnscheduled > 0) && (
+                  <div style={{ ...tileSub, color: installOverdue > 0 ? 'var(--status-order-now-ink)' : 'var(--status-order-soon-ink)', fontWeight: 600 }}>
+                    {installOverdue > 0 && `⚠ ${installOverdue} past On-Site date`}
+                    {installOverdue > 0 && installUnscheduled > 0 && ' · '}
+                    {installUnscheduled > 0 && `❔ ${installUnscheduled} unscheduled`}
+                  </div>
+                )}
+              </button>
+              <button type="button" onClick={() => nav('list')} style={{ ...tile, borderRight: '1px solid var(--hairline)' }}>
+                <div style={tileLabel}>🚚 Partially delivered</div>
+                <div style={tileNum}>{statusTotals.partial}</div>
+                <div style={tileSub}>open backorders</div>
+              </button>
+              <button type="button" onClick={() => nav('list')} style={tile}>
+                <div style={tileLabel}>❔ Needs data</div>
+                <div style={tileNum}>{needsData}</div>
+                <div style={tileSub}>{missingLead} missing lead · {missingOnsite} missing on-site</div>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ flex: '2 1 620px', minWidth: 420 }}>
+          {/* Title, the one-line how-to and the legend share one band: the key belongs
+              next to the chart's name, not stacked as a first row inside the card. */}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div style={{ flex: '1 1 260px', minWidth: 240 }}>
+              <div style={sectionTitle}>🗓 Timeline</div>
+              <div
+                style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}
+                title="Fixed 6-month window from today. Overdue dates show only when they still have ORDER NOW items, and are pinned to today. Confirming a drag publishes the package to the report — no second save needed."
+              >
+                6 months from today · hover for detail · click to open · <strong>drag a dot to reschedule</strong>
+              </div>
+            </div>
+            <TimelineLegend />
+          </div>
+          <ReqDateTimeline lanes={lanes} onJumpItem={jumpToItem} onJumpProject={jumpProject} onSetDate={setMilestoneDate} />
+        </div>
+      </div>
+
+      {/* 3. The action row: This week · Buy-By · Late deliveries, side by side. Everything
+          that has a deadline attached lives here, above the fold — the portfolio and stage
+          tables below are for reading, this row is for acting. */}
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        {/* The card is a headline, not a table: it no longer grows with the row (flex-grow
+            0) and caps at 300px, so the two tables next to it get the width instead. */}
+        <div style={{ flex: '0 1 260px', minWidth: 224, maxWidth: 300, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* One card, two clocks. The buy-by headline and the third clock ("what did
+              somebody promise me and not deliver?") are the same kind of deadline, so the
+              late-deliveries tile lives INSIDE the card instead of under it. The card's
+              body copy is gone: the headline already says it, and the two controls below
+              are where the answer is. Both go through `action` because SignatureCard
+              renders children above it, and the tile belongs under the button. */}
+          <SignatureCard
+            tone={totalOrderNow ? 'coral' : 'forest'}
+            eyebrow="This week"
+            title={totalOrderNow ? `${totalOrderNow} item${totalOrderNow === 1 ? '' : 's'} past its buy-by date` : 'Nothing past its buy-by date'}
+            action={
+              <>
+                <Button variant="secondary" size="sm" onClick={() => nav('list')} style={{ background: 'rgba(255,255,255,0.14)', color: '#fff', borderColor: 'rgba(255,255,255,0.4)' }}>
+                  Open Material List →
+                </Button>
+                {/* Clicking scrolls to its own table further down the page. */}
+                <button
+                  type="button"
+                  onClick={() => lateRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                  style={{ ...tile, width: '100%', marginTop: 'var(--space-lg)', borderWidth: 1, borderStyle: 'solid', borderColor: lateRows.length ? 'var(--status-order-now-ink)' : 'var(--border-strong)', borderRadius: 'var(--radius-md)' }}
+                >
+                  <div style={tileLabel}>⏰ Late deliveries</div>
+                  <div style={{ ...tileNum, color: lateRows.length ? 'var(--status-order-now-ink)' : 'var(--title)' }}>{lateRows.length}</div>
+                  <div style={tileSub}>
+                    {lateRows.length
+                      ? `promised and not here · worst is ${lateRows[0].behind} day${lateRows[0].behind === 1 ? '' : 's'} late`
+                      : 'every promised ship date still holds'}
+                  </div>
+                </button>
+              </>
+            }
+          />
+        </div>
+
+        <div style={{ flex: '3 1 440px', minWidth: 330 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div style={sectionTitle}>📅 Buy-By dates in the next 14 days</div>
+            <span style={{ flex: 1 }} />
+            {groupBtns(groupMode, setGroupMode)}
+          </div>
+          <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--canvas)' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                {groupMode === 'wp' ? (
+                  <tr style={{ background: 'var(--surface-soft)' }}>
+                    <th style={thL}>Project</th><th style={thL}>Work package</th><th style={th}>Items</th>
+                    <th style={thL}>Nearest Buy-By</th><th style={thL}>Most urgent</th><th style={{ ...th, width: 36 }} />
+                  </tr>
+                ) : (
+                  <tr style={{ background: 'var(--surface-soft)' }}>
+                    <th style={thL}>Project</th><th style={th}>Packages</th><th style={th}>Items</th>
+                    <th style={thL}>Nearest Buy-By</th><th style={thL}>Most urgent</th><th style={{ ...th, width: 36 }} />
+                  </tr>
+                )}
+              </thead>
+              <tbody>
+                {groupMode === 'wp' && wpGroups.map((g) => (
+                  <tr
+                    key={g.key}
+                    onClick={() => jumpToItem(g.projectId, g.itemId)}
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <td style={tdL}>{g.projectName}</td>
+                    <td style={{ ...tdL, color: 'var(--muted)' }}>{g.wpLabel}</td>
+                    <td style={{ ...td, fontWeight: 600 }}>{g.count}</td>
+                    <td style={buyByCell(g.overdue)}>{rangeText(g.nearest, g.latest)}</td>
+                    <td style={tdL}><StatusBadge status={g.status} /></td>
+                    <td style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>›</td>
+                  </tr>
+                ))}
+                {groupMode === 'project' && projGroups.map((g) => (
+                  <tr
+                    key={g.projectId}
+                    onClick={() => jumpProject(g.projectId)}
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <td style={tdL}>{g.projectName}</td>
+                    <td style={td}>{g.packages}</td>
+                    <td style={{ ...td, fontWeight: 600 }}>{g.count}</td>
+                    <td style={buyByCell(g.overdue)}>{rangeText(g.nearest, g.latest)}</td>
+                    <td style={tdL}><StatusBadge status={g.status} /></td>
+                    <td style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>›</td>
+                  </tr>
+                ))}
+                {due.length === 0 && <tr><td colSpan={6} style={{ ...tdL, color: 'var(--muted)', textAlign: 'center' }}>No buy-by dates within 14 days.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* 3b. ⏰ Late deliveries — one row per ITEM, not per package: the two ways out of a
+            late delivery (reschedule it, or confirm it arrived) are decisions about one
+            item, so collapsing them into a group row would hide exactly what has to be
+            acted on. Group by therefore only adds project header rows above the items. */}
+        <div ref={lateRef} style={{ flex: '3 1 440px', minWidth: 330 }}>
+          {/* Title + one-line how-to on the left, both controls stacked on the right —
+              same band as the Timeline, so the caption stops running under Group by. */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div style={{ flex: '1 1 260px', minWidth: 240 }}>
+              <div style={sectionTitle}>⏰ Late deliveries</div>
+              <div
+                style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}
+                title="Bought, promised for a date that has passed, still not here. Either action publishes that work package to the report — no second save needed. Click the row to open the item."
+              >
+                Past its promised date · 🗓 sets a new promise · ✅ confirms it arrived
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
+              {/* groupBtns emits loose siblings ("Group by:" + the two pills) and counts
+                  on its parent being a horizontal flex row — the column below is not one. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{groupBtns(lateGroup, setLateGroup)}</div>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={lateBlocks.length === 0}
+              onClick={() => {
+                const target = !allLateCollapsed;
+                setLateCollapsed(Object.fromEntries(lateBlocks.map((b) => [b.projectId, target])));
+              }}
+              style={{ padding: '4px 8px', color: 'var(--muted)', whiteSpace: 'nowrap' }}
+            >
+              {allLateCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
+            </Button>
+            </div>
+          </div>
+          <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'auto', background: 'var(--canvas)' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: 'var(--surface-soft)' }}>
+                {lateGroup === 'wp' && <th style={thL}>Work package</th>}
+                <th style={thL}>Item</th><th style={thL}>Promised</th>
+                <th style={th}>Days late</th><th style={{ ...th, width: 78 }}>Resolve</th><th style={{ ...th, width: 30 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {lateBlocks.map((b) => (
+                <Fragment key={b.projectId}>
+                  <tr
+                    onClick={() => setLateCollapsed((c) => ({ ...c, [b.projectId]: !c[b.projectId] }))}
+                    title={lateCollapsed[b.projectId] ? 'Expand this project' : 'Collapse this project'}
+                    style={{ cursor: 'pointer', background: 'var(--surface-soft)' }}
+                  >
+                    <td colSpan={lateCols + 1} style={{ ...tdL, font: 'var(--text-caption)', fontWeight: 700, color: 'var(--ink)' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ color: 'var(--muted)' }}>{lateCollapsed[b.projectId] ? '▸' : '▾'}</span>
+                        <span>{b.projectName}</span>
+                        <span style={{ color: 'var(--status-order-now-ink)', fontWeight: 600 }}>
+                          {b.rows.length} late · worst {b.worst}d
+                        </span>
+                      </span>
+                    </td>
+                  </tr>
+                  {!lateCollapsed[b.projectId] && b.rows.map((r) => {
+                const editing = reschedule && reschedule.id === r.itemId ? reschedule : null;
+                return (
+                  <tr
+                    key={r.key}
+                    onClick={() => { if (!editing) jumpToItem(r.projectId, r.itemId); }}
+                    style={{ cursor: editing ? 'default' : 'pointer' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    {lateGroup === 'wp' && <td style={{ ...tdL, color: 'var(--muted)' }}>{r.wpLabel}</td>}
+                    <td style={tdL} title={`${r.description}${r.vendor ? ` · ${r.vendor}` : ''}${r.po ? ` · PO ${r.po}` : ''}`}>{r.description}</td>
+                    {/* The new date is typed where the old one is read — the cell the row is
+                        about — instead of in a modal that would hide the rest of the list. */}
+                    <td style={buyByCell(true)}>
+                      {editing ? (
+                        <input
+                          type="date"
+                          autoFocus
+                          value={editing.date}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setReschedule({ id: r.itemId, date: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') applyReschedule(r, editing.date);
+                            if (e.key === 'Escape') setReschedule(null);
+                          }}
+                          style={{ height: 32, padding: '0 6px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--hairline)', font: 'var(--text-mono)', color: 'var(--ink)', background: 'var(--canvas)' }}
+                        />
+                      ) : fmtMDY(r.promised)}
+                    </td>
+                    <td style={{ ...td, fontWeight: 700, color: 'var(--status-order-now-ink)' }}>{r.behind}</td>
+                    {/* Icon-only: the two actions are the same two on every row, so the
+                        labels were repeated width. Each keeps its full sentence in the
+                        tooltip, and a blocked ✅ still says why instead of going mute. */}
+                    <td style={{ ...td, textAlign: 'left', whiteSpace: 'nowrap', padding: '10px 8px' }} onClick={(e) => e.stopPropagation()}>
+                      <span style={{ display: 'inline-flex', gap: 4 }}>
+                        {editing ? (
+                          <>
+                            <Button size="sm" variant="primary" style={iconBtn} title="Save the new promised date" aria-label="Save date" onClick={() => applyReschedule(r, editing.date)}>✓</Button>
+                            <Button size="sm" variant="ghost" style={iconBtn} title="Cancel" aria-label="Cancel" onClick={() => setReschedule(null)}>✕</Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              style={iconBtn}
+                              title="Reschedule — the vendor moved the delivery, set the new promised date"
+                              aria-label={`Reschedule ${r.description}`}
+                              onClick={() => setReschedule({ id: r.itemId, date: r.promised })}
+                            >
+                              🗓
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              disabled={!!r.blocked}
+                              style={iconBtn}
+                              title={r.blocked === 'log'
+                                ? 'This item follows its delivery log — register the arrival in Breakdown Delivery (🚚) from the Material List.'
+                                : r.blocked === 'partial'
+                                  ? 'Part of this order is already here — register the rest by quantity in Breakdown Delivery (🚚) from the Material List.'
+                                  : 'It arrived — mark it received into 🏭 the warehouse, stamped today'}
+                              aria-label={`Mark ${r.description} as arrived`}
+                              onClick={() => confirmArrived(r)}
+                            >
+                              ✅
+                            </Button>
+                          </>
+                        )}
+                      </span>
+                    </td>
+                    <td style={{ ...td, color: 'var(--muted)', textAlign: 'center', padding: '10px 6px' }}>›</td>
+                  </tr>
+                );
+                  })}
+                </Fragment>
+              ))}
+              {lateRows.length === 0 && (
+                <tr><td colSpan={lateCols + 1} style={{ ...tdL, color: 'var(--muted)', textAlign: 'center' }}>Nothing past its promised ship/delivery date.</td></tr>
+              )}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </div>
+
+      {/* 4. Portfolio (left) + Installation status (right), half the width each */}
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      <div style={{ flex: '1 1 460px', minWidth: 340 }}>
+        <div style={{ ...sectionTitle, marginBottom: 4 }}>Portfolio</div>
+        <div
+          style={{ font: 'var(--text-caption)', color: 'var(--muted)', marginBottom: 10 }}
+          title={`Every project by status${hasSupplyOnly ? ', grouped by scope' : ''}. The Complete bar reads closed out (solid) then received, not closed (light) — each package is measured against its own last stage, 🔩 installed or 📍 on site. Hover the bar for the counts.`}
+        >
+          Every project by status{hasSupplyOnly ? ', grouped by scope' : ''} · the Complete bar is <strong>closed out</strong> (solid) then <strong>received</strong> (light)
+        </div>
+        <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'auto', background: 'var(--canvas)' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: 'var(--surface-soft)' }}>
+                <th style={thL}>Project</th><th style={thN}>Items</th>
+                <th style={thN}>ORDER NOW</th><th style={thN}>Order soon</th><th style={thN}>Needs data</th>
+                <th style={thN}>Planned</th><th style={thN}>Ordered</th><th style={thN}>Partial</th>
+                <th style={{ ...thL, width: 172 }}>Complete</th>
+              </tr>
+            </thead>
+            <tbody>
+              {/* Grouped by the PROJECT's flag (not its packages': a supply-only project
+                  with an install package still lists under SUPPLY ONLY — only the stage
+                  tables split those out). Headers appear only once the mark is in use. */}
+              {portfolioSections.map((section) => (
+                <Fragment key={section.title}>
+                  {hasSupplyOnly && (
+                    <tr style={{ background: 'var(--surface-soft)' }}>
+                      <td colSpan={9} style={{ ...tdL, font: 'var(--text-caption)', fontWeight: 700, letterSpacing: 0.6, color: 'var(--muted)' }}>
+                        {section.title}
+                      </td>
+                    </tr>
+                  )}
+                  {section.rows.map((p) => {
+                const empty = p.items === 0;
+                return (
+                <tr
+                  key={p.project.id}
+                  onClick={() => jumpProject(p.project.id)}
+                  style={{ cursor: 'pointer', background: empty ? 'color-mix(in srgb, var(--status-order-soon) 48%, var(--canvas))' : undefined }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = empty ? 'color-mix(in srgb, var(--status-order-soon) 48%, var(--canvas))' : 'transparent'; }}
+                >
+                  <td style={tdL}>{p.project.name}{empty && <span style={{ font: 'var(--text-caption)', color: 'var(--status-order-soon-ink)', fontWeight: 600, marginLeft: 8 }}>⚠ no items yet</span>}</td>
+                  <td style={{ ...tdN, fontWeight: 600 }}>{p.items}</td>
+                  <td style={{ ...tdN, background: p.orderNow ? 'var(--status-order-now)' : undefined, color: p.orderNow ? 'var(--status-order-now-ink)' : 'var(--muted)', fontWeight: p.orderNow ? 600 : 400 }}>{p.orderNow}</td>
+                  <td style={{ ...tdN, background: p.soon ? 'var(--status-order-soon)' : undefined, color: p.soon ? 'var(--status-order-soon-ink)' : 'var(--muted)' }}>{p.soon}</td>
+                  <td style={{ ...tdN, background: p.needs ? 'var(--status-needs-data)' : undefined, color: p.needs ? 'var(--status-needs-data-ink)' : 'var(--muted)' }}>{p.needs}</td>
+                  <td style={{ ...tdN, color: 'var(--muted)' }}>{p.planned}</td>
+                  <td style={{ ...tdN, color: p.ordered ? 'var(--status-ordered-ink)' : 'var(--muted)' }}>{p.ordered}</td>
+                  <td style={{ ...tdN, background: p.partial ? 'var(--status-partial)' : undefined, color: p.partial ? 'var(--status-partial-ink)' : 'var(--muted)' }}>{p.partial}</td>
+                  <td style={{ ...tdL }}>
+                    {/* Each package is measured against ITS OWN closing stage (installed,
+                        or on-site when it's supply only), so a mixed project still reads
+                        on one bar. Denominator = every item, OFCI included: owner-furnished
+                        material is still installed by us (that's the "CI" in OFCI). */}
+                    <InstallBar
+                      closed={p.closed}
+                      awaiting={p.awaiting}
+                      total={p.items}
+                      title={`${p.closed} closed out · ${p.awaiting} received, not closed · ${p.items} items`}
+                    />
+                  </td>
+                </tr>
+                );
+                  })}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={{ flex: '1 1 460px', minWidth: 340, display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+          <div style={sectionTitle}>🏗 Installation status</div>
+          <span style={{ flex: 1 }} />
+          <Button size="sm" variant={installPending ? 'primary' : 'secondary'} onClick={() => setInstallPending(true)} style={{ padding: '5px 10px' }}>Pending install</Button>
+          <Button size="sm" variant={!installPending ? 'primary' : 'secondary'} onClick={() => setInstallPending(false)} style={{ padding: '5px 10px' }}>All packages</Button>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', flex: 1 }}>
+            Material already in hand, by project › work package. Click a project to collapse it.
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={installByProject.length === 0}
+            onClick={() => {
+              const target = !allInstallCollapsed;
+              setInstallCollapsed(Object.fromEntries(installByProject.map((p) => [p.projectId, target])));
+            }}
+            style={{ padding: '4px 8px', color: 'var(--muted)', whiteSpace: 'nowrap' }}
+          >
+            {allInstallCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
+          </Button>
+        </div>
+        <StageTable
+          blocks={installByProject}
+          supplyOnly={false}
+          collapsed={installCollapsed}
+          onToggle={toggleInstall}
+          onJumpProject={jumpProject}
+          onJumpItem={jumpToItem}
+          empty={installPending ? 'Nothing waiting to be installed — every received item is closed out.' : 'No material received yet.'}
+        />
+      </div>
+
+      {/* Supply Only status — same shape, measured against 📍 on site. Only shows up once
+          something in the portfolio is actually marked supply only. */}
+      {hasSupplyOnly && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+            <div style={sectionTitle}>📍 Supply Only status</div>
+            <span style={{ flex: 1 }} />
+            <Button size="sm" variant={supplyPending ? 'primary' : 'secondary'} onClick={() => setSupplyPending(true)} style={{ padding: '5px 10px' }}>Pending delivery</Button>
+            <Button size="sm" variant={!supplyPending ? 'primary' : 'secondary'} onClick={() => setSupplyPending(false)} style={{ padding: '5px 10px' }}>All packages</Button>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', flex: 1 }}>
+              Packages we supply but don't install — they close when the material reaches the jobsite.
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={supplyByProject.length === 0}
+              onClick={() => {
+                const target = !allSupplyCollapsed;
+                setSupplyCollapsed(Object.fromEntries(supplyByProject.map((p) => [p.projectId, target])));
+              }}
+              style={{ padding: '4px 8px', color: 'var(--muted)', whiteSpace: 'nowrap' }}
+            >
+              {allSupplyCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
+            </Button>
+          </div>
+          <StageTable
+            blocks={supplyByProject}
+            supplyOnly
+            collapsed={supplyCollapsed}
+            onToggle={toggleSupply}
+            onJumpProject={jumpProject}
+            onJumpItem={jumpToItem}
+            empty={supplyPending ? 'Nothing waiting for the jobsite — every received item is on site.' : 'No material received yet.'}
+          />
+        </div>
+      )}
+      </div>
+      </div>
+    </div>
+  );
+}

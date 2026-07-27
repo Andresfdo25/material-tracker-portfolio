@@ -1,0 +1,193 @@
+@import './styles/fonts.css';
+@import './styles/colors.css';
+@import './styles/typography.css';
+@import './styles/layout.css';
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+body {
+  background: var(--brand-mint);
+  font-family: var(--font-text);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--link-active);
+}
+select {
+  font-family: var(--font-text);
+}
+input::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+#root {
+  height: 100%;
+}
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--canvas);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+.brand {
+  font: var(--text-title-sm);
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.gear-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 16px;
+}
+.gear-btn:hover {
+  background: var(--surface-soft);
+}
+/* NOTE: no overflow on .main — an overflow container would become the scroll context
+ * for .sticky-toolbar (breaking its stickiness and adding a phantom 64px offset).
+ * Wide tables scroll inside their own overflow-x wrappers instead. */
+.main {
+  padding: 10px 32px 72px;
+  background: var(--brand-mint);
+  width: 100%;
+  box-sizing: border-box;
+}
+@keyframes flashIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Loading spinner (materials import parse step) */
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 3px solid var(--hairline);
+  border-top-color: var(--info-border);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The dedicated print/PDF layout (PrintReport.tsx) — exists only on paper. */
+.print-report {
+  display: none;
+}
+
+/* Post-save Undo snackbar */
+.undo-snackbar {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--surface-dark);
+  color: var(--on-dark);
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  font: var(--text-body);
+  animation: flashIn 180ms ease;
+}
+
+/* Keeps the project header + action rows visible while scrolling a long material
+ * list — sits just below the sticky topbar. The corporate-navy band is an inner
+ * element; this wrapper stays canvas-colored for the project-switcher row. */
+.sticky-toolbar {
+  position: sticky;
+  top: 64px;
+  z-index: 20;
+  background: var(--brand-mint);
+  padding: 2px 0 10px;
+  margin-top: 0;
+}
+
+/* Jump-to-item highlight (Overview/Submittals → Material List). */
+.row-flash {
+  animation: rowFlash 2.6s ease;
+}
+@keyframes rowFlash {
+  0%,
+  55% {
+    background-color: var(--input-highlight);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* Export PDF: the on-screen UI disappears entirely; only the branded PrintReport
+ * (procurement-log template, landscape) goes to paper. */
+@page {
+  size: letter landscape;
+  /* No page-margin box: that band is where Chrome draws its own header/footer line
+   * (document title, date, URL, page numbers). The title is only set to seed the
+   * "Save as PDF" filename and its content is already inside the report, so the box
+   * is suppressed here and the visual margin moves to .print-report's padding. */
+  margin: 0;
+}
+@media print {
+  .no-print,
+  .screen-only,
+  .undo-snackbar {
+    display: none !important;
+  }
+  /* Paper is white in BOTH themes: body/.main paint --brand-mint on screen (near-black
+   * in dark mode), and the report's data cells are transparent — without this override
+   * the app background bleeds through the whole page. PrintReport's own colors (navy
+   * header, status fills) are explicit inline styles and are not affected. */
+  html,
+  body,
+  .main {
+    background: #ffffff !important;
+  }
+  .main {
+    padding: 0;
+    overflow-x: visible;
+  }
+  .print-report {
+    display: block;
+    /* Restores the white border the @page margin used to provide, and stays clear of
+     * a physical printer's unprintable edge. */
+    padding: 9mm;
+  }
+}

@@ -1,0 +1,139 @@
+/* Colors — Advanced Material Tracker
+ * Two layers:
+ *   1. Editorial brand palette: white canvas, dark ink, near-black primary.
+ *   2. Semaphore status system — the product's signature. Drives every alert/status. */
+:root {
+  /* ---- Brand / primary ---- */
+  --primary: #181d26;
+  --primary-active: #0d1218;
+  /* ---- Brand palette (user's 2026-07 palette image) ---- */
+  --brand-dark: #312051;   /* deep purple — band background, page titles */
+  --brand-slate: #45647d;  /* slate blue — secondary accents */
+  --brand-teal: #64dcd3;   /* turquoise — highlights on dark surfaces */
+  --brand-mint: #defdf4;   /* pale mint — app background */
+  --brand-orange: #ff8f00; /* logo orange (lightened) — New Project */
+  /* Legacy alias — band styles referenced the old corporate navy; keep them on-palette.
+   * (PrintReport keeps its own hex navy: the PDF mimics the client's Excel template.) */
+  --brand-navy: var(--brand-dark);
+
+  /* ---- Ink / text ---- */
+  --ink: #181d26;
+  --body: #333840;
+  --muted: #41454d;
+  --on-primary: #ffffff;
+  --on-dark: #ffffff;
+  /* Title ink — same as --brand-dark in light mode; lightened in dark mode (the band
+   * keeps using --brand-dark as a background, so titles need their own token). */
+  --title: #312051;
+
+  /* ---- Surfaces ---- */
+  --canvas: #ffffff;
+  --surface-soft: #f8fafc;
+  --surface-strong: #e0e2e6;
+  --surface-dark: #181d26;
+  --surface-dark-elevated: #1d1f25;
+
+  /* ---- Lines / borders ---- */
+  --hairline: #dddddd;
+  --border-strong: #9297a0;
+
+  /* ---- Signature card surfaces ---- */
+  --signature-coral: #aa2d00;
+  --signature-forest: #0a2e0e;
+  --signature-cream: #f5e9d4;
+  --signature-peach: #fcab79;
+  --signature-mint: #a8d8c4;
+  --signature-yellow: #f4d35e;
+  --signature-mustard: #d9a441;
+
+  /* ---- Semantic ---- */
+  --link: #1b61c9;
+  --link-active: #1a3866;
+  --info: #254fad;
+  --info-border: #458fff;
+  --success: #006400;
+  --success-border: #39bf45;
+
+  /* ======================================================================
+   * SEMAPHORE — product status system.
+   * ====================================================================== */
+  --status-order-now: #f7c1c1;
+  --status-order-now-ink: #8f1d1d;
+  --status-order-soon: #fac775;
+  --status-order-soon-ink: #8a5210;
+  --status-ordered: #c0dd97;
+  --status-ordered-ink: #33520f;
+  --status-partial: #f9d9b8;
+  --status-partial-ink: #8a4b10;
+  --status-needs-data: #e4e2da;
+  --status-needs-data-ink: #5c584a;
+  --status-planned: #eef0f2;
+  --status-planned-ink: #41454d;
+  /* INSTALLED — terminal state, closes the item's lifecycle. Deliberately NOT a third
+   * green (ordered and delivered already share one): a brand-teal tint that reads as
+   * "closed" and stays legible on both themes without a dark-mode re-declaration. */
+  --status-installed: #a8dcd6;
+  --status-installed-ink: #1d514c;
+  /* ON SITE — terminal state of a SUPPLY ONLY package (we furnish, someone else installs),
+   * so it belongs to the same "closed" family as installed: a mint-green sibling of that
+   * teal, greener so the two never read as the same badge side by side. */
+  --status-on-site: #9edcc0;
+  --status-on-site-ink: #14543f;
+  /* N/A — Owner Furnished, Contractor Installed items (out of procurement flow).
+   * A cool slate distinct from the warm-beige needs-data and near-white planned. */
+  --status-na: #d3dae6;
+  --status-na-ink: #46536a;
+
+  --input-highlight: #fff3b0;
+
+  /* ---- Highlighter row flags (Material List) — fluorescent marker tones ---- */
+  --hl-yellow: #fff275;
+  --hl-green: #b6ff5c;
+  --hl-pink: #ff8ce0;
+
+  /* ---- Work-package title bar — ONE tone for every package (brand-slate tint).
+   * Replaces the per-package pastel colors; the yellow/green save-dot stays legible. */
+  --wp-bar: #e6edf4;
+  --wp-bar-border: #c5d3df;
+  --wp-dirty-ink: #8a5210;
+}
+
+/* ======================================================================
+ * DARK MODE — override the neutral surfaces/text + page background + title ink.
+ * The semaphore/status pastels, the deep-purple band and the signature cards keep
+ * their values (they read well on dark). Toggled via [data-theme="dark"] on <html>.
+ * ====================================================================== */
+:root[data-theme='dark'] {
+  --canvas: #1b2233;
+  --surface-soft: #232c40;
+  --surface-strong: #313c54;
+  --ink: #eaeef6;
+  --body: #c7d0e0;
+  --muted: #97a3b9;
+  --hairline: #34405a;
+  --border-strong: #56617a;
+  --brand-mint: #0f1520;
+  --title: #d8ccff;
+  --input-highlight: #4d4620;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --wp-bar: #26314a;
+  --wp-bar-border: #3a4a6b;
+  --wp-dirty-ink: #f4c163;
+}
+
+/* Highlighted rows (Material List) keep their light-mode look in dark mode: the
+ * fluorescent marker fills don't change between themes, so the row re-declares the
+ * light neutral tokens locally — dark ink over the marker stays legible, and any
+ * popover opened from inside the row renders light too. */
+:root[data-theme='dark'] .row-hl {
+  --ink: #181d26;
+  --body: #333840;
+  --muted: #41454d;
+  --canvas: #ffffff;
+  --surface-soft: #f8fafc;
+  --surface-strong: #e0e2e6;
+  --hairline: #dddddd;
+  --border-strong: #9297a0;
+  --input-highlight: #fff3b0;
+}
