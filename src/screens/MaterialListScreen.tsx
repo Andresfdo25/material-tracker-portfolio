@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../store/useApp';
 import {
-  closesAtSite, computeItem, deliveryWatch, FILTERABLE, fmtFileStamp, fmtMDY, pendingSubmittalApproval, pkgDirty, today,
+  closesAtSite, computeItem, deliveryLogRows, deliveryWatch, FILTERABLE, fmtFileStamp, fmtMDY, pendingSubmittalApproval, pkgDirty, today,
 } from '../store/logic';
 import { loadJSON, saveJSON } from '../store/persist';
 import { usePersisted } from '../store/usePersisted';
@@ -30,7 +30,7 @@ import { RenamePackageControl } from '../components/RenamePackageControl';
 import { MaterialListToolbar } from '../components/MaterialListToolbar';
 import { MaterialGrid } from '../components/grid/MaterialGrid';
 import { PrintReport } from '../components/PrintReport';
-import { ExportPdfModal } from '../components/ExportPdfModal';
+import { ExportPdfModal, type ExportChoice, type ExportPkgOption } from '../components/ExportPdfModal';
 
 export function MaterialListScreen() {
   const { db, actions, activeProjectId, setActiveProjectId, thresholdsFor, focusItemId, clearFocusItem } = useApp();
@@ -47,6 +47,10 @@ export function MaterialListScreen() {
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [includeSubSummary, setIncludeSubSummary] = useState(false);
+  const [includeDeliveryLog, setIncludeDeliveryLog] = useState(true);
+  // Work packages to print: null = all of them (the usual case). A subset is what the
+  // PM picks in advanced phases or when the report covers a single change order.
+  const [printWpIds, setPrintWpIds] = useState<string[] | null>(null);
   const [pendingPrint, setPendingPrint] = useState(false);
   // Chrome/Edge/Safari seed the "Save as PDF" filename from document.title, so the
   // export swaps it in for the duration of the print dialog (see the print effect).
@@ -92,6 +96,9 @@ export function MaterialListScreen() {
     const restore = () => {
       window.clearTimeout(timer);
       document.title = prev;
+      // Back to the whole project: the hidden PrintReport is also what a plain browser
+      // Ctrl+P captures, and that one never went through the export dialog.
+      setPrintWpIds(null);
     };
     window.addEventListener('afterprint', restore, { once: true });
     timer = window.setTimeout(restore, 120000);
@@ -226,16 +233,36 @@ export function MaterialListScreen() {
     }
   };
 
-  const pendingSubmittalCount = allItems.filter(pendingSubmittalApproval).length;
+  // Only packages that would actually print are offered in the export dialog — PrintReport
+  // skips an empty one, so selecting it would promise a section that never appears.
+  const exportPkgOptions: ExportPkgOption[] = packages
+    .map((p) => {
+      const items = itemsOf(p.id);
+      return {
+        id: p.id,
+        label: p.label,
+        itemCount: items.length,
+        pendingCount: items.filter(pendingSubmittalApproval).length,
+        // Same source as the printed block — counting it.deliveries here would offer
+        // "1 delivery" for a PDF that goes on to print eighteen.
+        deliveryCount: items.reduce((s, it) => s + deliveryLogRows(it).length, 0),
+      };
+    })
+    .filter((p) => p.itemCount > 0);
   // "Material List - BVSD Fairview HS - 07222026" (chars illegal in filenames stripped).
   const pdfFilename = `Material List - ${project.name} - ${fmtFileStamp(today())}`.replace(/[\\/:*?"<>|]/g, '-');
   const exportPdf = () => setShowExport(true);
-  const runExport = (includeSummary: boolean) => {
+  const runExport = ({ includeSummary, includeDeliveryLog, wpIds }: ExportChoice) => {
     printTitleRef.current = pdfFilename;
     setIncludeSubSummary(includeSummary);
+    setIncludeDeliveryLog(includeDeliveryLog);
+    setPrintWpIds(wpIds);
     setShowExport(false);
     setPendingPrint(true);
   };
+  // The subset rides in as a filtered package list: every part of the report (tables,
+  // delivery log, submittal summary) is derived from it, so one filter covers all three.
+  const printPackages = printWpIds ? packages.filter((p) => printWpIds.includes(p.id)) : packages;
   const breakdownItem = breakdownId ? db.items.find((i) => i.id === breakdownId) : null;
   const submittalBreakdownItem = submittalBreakdownId ? db.items.find((i) => i.id === submittalBreakdownId) : null;
 
@@ -413,10 +440,10 @@ export function MaterialListScreen() {
         })}
       </div>
 
-      <PrintReport project={project} packages={packages} itemsOf={itemsOf} mode={viewMode} cfg={cfg} showSubmittalSummary={includeSubSummary} />
+      <PrintReport project={project} packages={printPackages} itemsOf={itemsOf} mode={viewMode} cfg={cfg} showSubmittalSummary={includeSubSummary} showDeliveryLog={includeDeliveryLog} />
 
       {showExport && (
-        <ExportPdfModal mode={viewMode} pendingCount={pendingSubmittalCount} onExport={runExport} onClose={() => setShowExport(false)} />
+        <ExportPdfModal mode={viewMode} packages={exportPkgOptions} onExport={runExport} onClose={() => setShowExport(false)} />
       )}
       {showCreateProject && <CreateProjectModal onClose={() => setShowCreateProject(false)} />}
       {showAddWp && <AddWorkPackageModal projectId={project.id} onClose={() => setShowAddWp(false)} />}

@@ -256,6 +256,51 @@ export function siteDateFromLog(it: Pick<MaterialItem, 'qty' | 'siteDate'>, deli
   const legs = deliveries.filter((d) => d.kind === 'site' || d.kind === 'stock' || d.kind === 'wh-out').map((d) => d.date).sort();
   return it.siteDate || legs[legs.length - 1] || today();
 }
+/** One line of the exported delivery log. */
+export interface DeliveryLogRow {
+  /** Numeric when the QTY is; the raw QTY text ("1 lot") when it isn't. */
+  qty: number | string;
+  kind?: DeliveryKind;
+  date: string;
+  /** True when the row was derived from the stage instead of a registered entry. */
+  synthetic: boolean;
+}
+
+/** What the delivery log PRINTS for one item — which is not the same as `it.deliveries`.
+ *
+ * The log and the stage are two different writers (CLAUDE.md §6), and only the first one
+ * fills `deliveries`. A PM who moves material with the 📍/🏭 stage buttons — the fast path,
+ * and the only one needed when the whole QTY lands in one trip — registers nothing, so the
+ * exported log used to be silent about material the rest of the report already showed as
+ * delivered. That reads as a bug in the PDF even though every screen agreed: the block is
+ * titled "what arrived", and things had arrived.
+ *
+ * So an item with no entries falls back to ONE row derived from its stage. Never both:
+ * once entries exist they are the detail, and a summary row next to them would double-count
+ * the same material. OFCI is excluded — we never receive owner-furnished material, which is
+ * exactly why `stagePatch` refuses to mark it delivered. */
+export function deliveryLogRows(
+  it: Pick<MaterialItem, 'qty' | 'po' | 'deliveries' | 'delivered' | 'siteDate' | 'receivedDate' | 'receivedQty' | 'shipDate'>,
+): DeliveryLogRow[] {
+  if (it.deliveries.length) {
+    return it.deliveries.map((d) => ({ qty: d.qty, kind: d.kind, date: d.date, synthetic: false }));
+  }
+  if (isOfci(it.po)) return [];
+  const onSite = !!it.siteDate;
+  if (!it.delivered && !onSite && !it.receivedQty) return [];
+  // A received item moved its whole QTY; only a still-open partial moved just receivedQty.
+  const total = totalQty(it);
+  const qty = it.delivered || onSite ? (total ?? it.qty) : it.receivedQty;
+  return [{
+    qty,
+    // No siteDate means it came in but hasn't reached the jobsite: a plain receipt, the
+    // same shape a legacy entry has.
+    kind: onSite ? 'site' : undefined,
+    date: (onSite ? it.siteDate : it.receivedDate) || it.receivedDate || it.shipDate || '',
+    synthetic: true,
+  }];
+}
+
 export const DELIVERY_KIND_META: Record<DeliveryKind, { icon: string; label: string }> = {
   site: { icon: '📍', label: 'Delivered to site' },
   'wh-in': { icon: '🏭', label: 'Arrived at warehouse' },

@@ -207,8 +207,11 @@ input::placeholder {
   }
   .print-report {
     display: block;
-    /* Restores the white border the @page margin used to provide, and stays clear of
-     * a physical printer's unprintable edge. */
-    padding: 9mm;
+    /* Restores the white border the @page margin used to provide, and stays clear of a
+     * physical printer's unprintable edge. SIDES ONLY: block padding lands once, at the
+     * start and the end of the whole flow, so page 2 opened flush against the paper edge.
+     * The top and bottom margins are per-page and live in the sheet table's repeated
+     * <thead> / <tfoot> (see PrintReport). */
+    padding: 0 9mm;
   }
 }
