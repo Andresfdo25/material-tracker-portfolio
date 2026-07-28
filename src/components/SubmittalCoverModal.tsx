@@ -86,8 +86,12 @@ export function SubmittalCoverModal({ items, onClose }: { items: MaterialItem[];
         types, revs, otherText: otherText.trim(),
       };
       const bytes = await generateSubmittalCover(templateBytes, header, rows);
-      const slug = (s: string) => s.replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '');
-      downloadPdf(bytes, `Submittal-${slug(number) || slug(pkg?.prefix ?? '') || 'cover'}-${slug(project.name)}-${today()}.pdf`);
+      // "Submittal Cover - 10 21 Bron Tapes.pdf" — el nombre del paquete tal cual lo
+      // lee el PM (el Title editado acá manda sobre pkg.label), con los caracteres
+      // ilegales en nombres de archivo cambiados por "-", igual que el export del PDF.
+      const wpName = title.trim() || pkg?.label || 'Cover';
+      const name = `Submittal Cover - ${wpName}`.replace(/[\\/:*?"<>|]/g, '-');
+      downloadPdf(bytes, `${name}.pdf`);
       if (toAddress.trim() !== (project.gcAddress ?? '')) actions.updateProject(project.id, { gcAddress: toAddress.trim() });
       onClose();
     } catch (e) {
