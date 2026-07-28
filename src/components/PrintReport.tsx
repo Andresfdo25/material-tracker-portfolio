@@ -4,7 +4,7 @@
 // one boxed table per work package. Rendered for both Internal and Client·GC exports —
 // Internal adds the procurement columns (Lead, Buy-By, Submittal, PO#, PO Date).
 import { Fragment, type CSSProperties } from 'react';
-import { closesAtSite, computeItem, fmtMDY, isPartial, isPartiallyInstalled, pendingSubmittalApproval, submittalBlockers, today } from '../store/logic';
+import { closesAtSite, computeItem, deliveryLogRows, fmtMDY, isPartial, isPartiallyInstalled, pendingSubmittalApproval, submittalBlockers, today } from '../store/logic';
 import type { Cfg, DeliveryKind, ExportMode, ItemStatus, MaterialItem, Project, WorkPackage } from '../store/types';
 import logoUrl from '../assets/demo-contractor-logo.svg';
 
@@ -68,7 +68,7 @@ function shipText(it: MaterialItem): string {
   return it.shipDate ? fmtMDY(it.shipDate) : 'Confirm Date';
 }
 
-export function PrintReport({ project, packages, itemsOf, mode, cfg, showSubmittalSummary = false }: {
+export function PrintReport({ project, packages, itemsOf, mode, cfg, showSubmittalSummary = false, showDeliveryLog = true }: {
   project: Project;
   packages: WorkPackage[];
   itemsOf: (wpId: string) => MaterialItem[];
@@ -77,6 +77,9 @@ export function PrintReport({ project, packages, itemsOf, mode, cfg, showSubmitt
   /** Append a compact "items pending submittal approval" summary, grouped by work
    * package, at the end of the report. Opt-in from the Export PDF dialog. */
   showSubmittalSummary?: boolean;
+  /** Append the delivery log. Opt-OUT from the Export PDF dialog (it defaults to on:
+   * it was unconditional before the dialog learned to ask). */
+  showDeliveryLog?: boolean;
 }) {
   const internal = mode === 'internal';
   const todayMDY = fmtMDY(today());
@@ -91,7 +94,9 @@ export function PrintReport({ project, packages, itemsOf, mode, cfg, showSubmitt
   const deliveryGroups = packages
     .map((pkg) => ({
       pkg,
-      entries: itemsOf(pkg.id).flatMap((it) => it.deliveries.map((d) => ({ it, d }))),
+      // deliveryLogRows, not it.deliveries: an item moved with the stage buttons has no
+      // registered entries and still belongs in the log (see the function's comment).
+      entries: itemsOf(pkg.id).flatMap((it) => deliveryLogRows(it).map((d) => ({ it, d }))),
     }))
     .filter((g) => g.entries.length > 0);
   const deliveryTotal = deliveryGroups.reduce((s, g) => s + g.entries.length, 0);
@@ -114,8 +119,9 @@ export function PrintReport({ project, packages, itemsOf, mode, cfg, showSubmitt
      NOTE (lote 44): **the Notes column is not exported.** Those entries carry invoice
      numbers and the PM's own references — internal bookkeeping, not something the GC is
      owed — and dropping it is also what lets the block live in half a page. */
-  const deliveryBlock = deliveryGroups.length === 0 ? null : summaryBlock(
-    `DELIVERY LOG — ${deliveryTotal} ENTR${deliveryTotal > 1 ? 'IES' : 'Y'} REGISTERED`,
+  const deliveryBlock = !showDeliveryLog || deliveryGroups.length === 0 ? null : summaryBlock(
+    // Not "REGISTERED" any more: a row can come from the stage instead of a log entry.
+    `DELIVERY LOG — ${deliveryTotal} ENTR${deliveryTotal > 1 ? 'IES' : 'Y'}`,
     'Quantities received and moved, grouped by work package. "→" is a release out of the warehouse, not a new receipt.',
     <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
       <colgroup>
@@ -145,7 +151,8 @@ export function PrintReport({ project, packages, itemsOf, mode, cfg, showSubmitt
                 <td style={{ ...cell, fontSize: 9 }}>{it.description}</td>
                 <td style={{ ...qtyCell, fontSize: 9 }}>{d.kind === 'wh-out' ? '→' : '+'}{d.qty}</td>
                 <td style={{ ...cell, fontSize: 9 }}>{d.kind ? KIND_PRINT[d.kind] : 'received'}</td>
-                <td style={{ ...cell, fontSize: 9 }}>{fmtMDY(d.date)}</td>
+                {/* A stage-derived row can be dateless (the PM never stamped one). */}
+                <td style={{ ...cell, fontSize: 9 }}>{d.date ? fmtMDY(d.date) : '—'}</td>
               </tr>
             ))}
           </Fragment>
@@ -190,9 +197,16 @@ export function PrintReport({ project, packages, itemsOf, mode, cfg, showSubmitt
   );
   const summaryBlocks = [deliveryBlock, submittalBlock].filter(Boolean);
 
-  return (
-    <div className="print-report" style={{ fontFamily: 'Arial, Helvetica, sans-serif', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}>
-      {/* ------------------------------------------------ branded header block */}
+  /* ------------------------------------------------ branded header block
+     It rides in the <thead> of the sheet table below, so the browser reprints it at the
+     top of EVERY page. Two reasons, and the second is not cosmetic: the Excel template
+     this tool grew out of did the same ("repeat rows at top"), and page 2+ had no top
+     margin at all — `.print-report`'s padding only applies once, at the start of the
+     flow, and the `@page` margin box has to stay at 0 or Chrome draws its own
+     header/footer band back in (see the trap in CLAUDE.md). The padding that opens each
+     page therefore lives on this block, and the bottom one on the <tfoot> spacer. */
+  const headerBlock = (
+    <>
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 4 }}>
         <tbody>
           <tr>
@@ -212,7 +226,25 @@ export function PrintReport({ project, packages, itemsOf, mode, cfg, showSubmitt
         </tbody>
       </table>
       <div style={{ fontSize: 9, fontStyle: 'italic', color: '#333', marginBottom: 8 }}>Spec / Arq Ref. | Item Description</div>
+    </>
+  );
 
+  return (
+    <div className="print-report" style={{ fontFamily: 'Arial, Helvetica, sans-serif', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}>
+      {/* The sheet: one outer table whose header group repeats per page. `fixed` layout so
+        * the nested package tables size against the page and not against their content. */}
+      <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+        <thead>
+          <tr><td style={{ padding: '9mm 0 0' }}>{headerBlock}</td></tr>
+        </thead>
+        {/* Repeats at the foot of every page, which is the only way to keep the last row
+          * off the paper edge on a page that fills up. Empty on purpose. */}
+        <tfoot>
+          <tr><td style={{ height: '9mm' }} /></tr>
+        </tfoot>
+        <tbody>
+          <tr>
+            <td style={{ verticalAlign: 'top' }}>
       {/* ------------------------------------------------ one boxed table per package */}
       {packages.map((pkg) => {
         const items = itemsOf(pkg.id);
@@ -309,6 +341,10 @@ export function PrintReport({ project, packages, itemsOf, mode, cfg, showSubmitt
          * to it would be the opposite of the point. */
         summaryBlocks.length === 1 && <div style={{ marginTop: 18 }}>{summaryBlocks[0]}</div>
       )}
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }

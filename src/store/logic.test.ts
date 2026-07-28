@@ -12,7 +12,7 @@ import type { Db, DeliveryRecord, MaterialItem, ReportSnapshot } from './types';
 import { VENDORS_SEED } from '../seed/catalogs';
 import {
   addDays, addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, awaitingInstall, backorderQty, closesAtSite, closingStage,
-  computeItem, computeShipDate, daysLate, deliveryTotals, deliveryWatch, diffDays, fmtDays, fmtFileStamp, fmtLong, fmtMDY,
+  computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, diffDays, fmtDays, fmtFileStamp, fmtLong, fmtMDY,
   hasOpenBackorder, INSTALL_DEFAULTS, installCap, isClosed, isPartial, isPartiallyInstalled, itemDirty, itemStage, logDrivesStage, matchVendor,
   migrateDb, normalizeUm, normQty, parseISO, pendingInstallQty, prefixCompare, projectClosesAtSite, removeDeliveryFrom,
   removeInstallFrom, REPORT_FIELDS, snapshot, splitDescription, stagePatch, SUBMITTAL_DEFAULTS, submittalApproved,
@@ -286,6 +286,57 @@ describe('deliveryTotals — a warehouse release is a movement, not a new receip
     const onSiteShown = owns ? deliveryTotals([]).onSite : (itemStage(it) === 'on-site' || itemStage(it) === 'installed' ? totalQty(it)! : 0);
     expect(onSiteShown).toBe(10);
     expect(totalQty(it)! - onSiteShown).toBe(0);
+  });
+});
+
+describe('deliveryLogRows — what the PDF prints, which is not just it.deliveries', () => {
+  it('registered entries win and are printed one by one', () => {
+    const rows = deliveryLogRows(item({
+      qty: 10,
+      deliveries: [{ qty: 4, note: 'inv 12', date: '2026-07-02', kind: 'site' }, { qty: 6, note: '', date: '2026-07-03', kind: 'wh-in' }],
+      delivered: true, siteDate: '2026-07-03',
+    }));
+    expect(rows.map((r) => [r.qty, r.kind, r.date, r.synthetic]))
+      .toEqual([[4, 'site', '2026-07-02', false], [6, 'wh-in', '2026-07-03', false]]);
+  });
+
+  it('an item moved with the stage buttons still gets a row', () => {
+    // The stage and the log are two different writers and only the log fills
+    // `deliveries`, so the exported block used to be silent about material every other
+    // screen already showed as delivered.
+    expect(deliveryLogRows(item({ qty: 8, delivered: true, siteDate: '2026-05-25', receivedDate: '2026-07-21' })))
+      .toEqual([{ qty: 8, kind: 'site', date: '2026-05-25', synthetic: true }]);
+  });
+
+  it('received but not on site yet is a plain receipt, dated by the receipt', () => {
+    expect(deliveryLogRows(item({ qty: 8, delivered: true, receivedDate: '2026-07-21' })))
+      .toEqual([{ qty: 8, kind: undefined, date: '2026-07-21', synthetic: true }]);
+  });
+
+  it('an open partial with no log moves only what arrived', () => {
+    expect(deliveryLogRows(item({ qty: 10, receivedQty: 4, receivedDate: '2026-07-21' })))
+      .toEqual([{ qty: 4, kind: undefined, date: '2026-07-21', synthetic: true }]);
+  });
+
+  it('a non-numeric QTY prints its own text instead of a number', () => {
+    expect(deliveryLogRows(item({ qty: '1 lot', delivered: true, siteDate: '2026-05-25' }))[0].qty).toBe('1 lot');
+  });
+
+  it('nothing received, nothing printed', () => {
+    expect(deliveryLogRows(item({ qty: 10 }))).toEqual([]);
+  });
+
+  it('OFCI never shows up: we never received it', () => {
+    // It cannot even reach `delivered` through stagePatch — but migrated data did.
+    expect(deliveryLogRows(item({ qty: 10, po: 'OFCI', delivered: true, siteDate: '2026-05-25' }))).toEqual([]);
+  });
+
+  it('never both: entries are the detail, so no summary row is added next to them', () => {
+    const rows = deliveryLogRows(item({
+      qty: 10, delivered: true, siteDate: '2026-07-03',
+      deliveries: [{ qty: 10, note: '', date: '2026-07-03', kind: 'site' }],
+    }));
+    expect(rows).toHaveLength(1);
   });
 });
 
