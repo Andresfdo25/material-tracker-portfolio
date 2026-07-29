@@ -3,7 +3,7 @@
 // by project → work package with item counts. All read published report snapshots.
 import { Fragment, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useApp } from '../store/useApp';
-import { awaitingInstall, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fmtLong, fmtMDY, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, parseISO, projectClosesAtSite, submittalBlockers, today, type InstallUrgency } from '../store/logic';
+import { awaitingInstall, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMDY, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, parseISO, projectClosesAtSite, submittalBlockers, today, type InstallUrgency } from '../store/logic';
 import type { ComputedItem, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
 import { StatusBadge } from '../components/ds/StatusBadge';
 import { SignatureCard } from '../components/ds/SignatureCard';
@@ -260,7 +260,7 @@ function TimelineLegend() {
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', font: 'var(--text-caption)', color: 'var(--muted)' }}>
       <span style={item} title="One work package's On-Site Req. date"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-slate)' }} /> WP Req. date</span>
       <span style={item} title="The project's collapsed milestone — all material required, or all delivered on a supply-only project"><span style={{ width: 17, height: 17, borderRadius: '50%', background: 'var(--brand-teal)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-slate)' }} /> All material</span>
-      <span style={item} title="Field measurements visit — one per package"><span style={{ width: 10, height: 10, borderRadius: 2, transform: 'rotate(45deg)', background: 'var(--brand-orange)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-orange)' }} /> Field measure</span>
+      <span style={item} title="Field measurements visit — one per package. It stays here, pinned to today once the date passes, until you confirm the measurements were taken (click the ◆, or set Field measurements to Approved in Breakdown Submittals)."><span style={{ width: 10, height: 10, borderRadius: 2, transform: 'rotate(45deg)', background: 'var(--brand-orange)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-orange)' }} /> Field measure</span>
       <span style={item} title="The package still has items past their buy-by date"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: `0 0 0 2px ${TL_RED}` }} /> ORDER NOW</span>
       <span style={item} title="Every item in the package is closed out"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--success-border)' }} /> Closed out</span>
       <span style={item} title="The stretch between a project's first and last milestone — how long its material keeps landing"><span style={{ width: 22, height: 7, borderRadius: 4, background: 'color-mix(in srgb, var(--brand-slate) 28%, transparent)' }} /> Delivery window</span>
@@ -268,11 +268,13 @@ function TimelineLegend() {
   );
 }
 
-function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
+function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfirmFm }: {
   lanes: Lane[];
   onJumpItem: (projectId: string, itemId: string) => void;
   onJumpProject: (projectId: string) => void;
   onSetDate: (projectId: string, wpId: string | undefined, iso: string, field: 'onsite' | 'fieldDate') => void;
+  /** Click on a ◆ — "we measured": marks the package's Field measurements Approved. */
+  onConfirmFm: (wpId: string, wpLabel: string, date: string) => void;
 }) {
   const [hover, setHover] = useState<{ laneIdx: number; msIdx: number } | null>(null);
   const [drag, setDrag] = useState<{ laneIdx: number; msIdx: number; date: string } | null>(null);
@@ -333,6 +335,7 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
     );
   }
 
+  const todayISO = today();
   const ringOf = (m: Milestone) => (m.kind === 'fm' ? 'var(--brand-orange)' : m.orderNow ? TL_RED : m.complete ? 'var(--success-border)' : 'var(--brand-slate)');
   /** Right edge of a band/segment, as a `right:` offset — nested calc() is legal CSS and
    * saves carrying the track's pixel width into JS just to subtract two fractions. */
@@ -438,6 +441,10 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
                 {lane.milestones.map((m, msIdx) => {
                   const big = m.kind === 'all';
                   const fm = m.kind === 'fm';
+                  // A ◆ whose day came and went with nobody confirming it. It sits on the
+                  // TODAY line (the clamp in `frac`) and pulses in its own orange, because
+                  // pinned-and-silent is exactly how a site visit gets forgotten.
+                  const fmOverdue = fm && m.date < todayISO;
                   const d = big ? 20 : fm ? 14 : 13;
                   const isHover = hover?.laneIdx === laneIdx && hover?.msIdx === msIdx;
                   const isDragging = drag?.laneIdx === laneIdx && drag?.msIdx === msIdx;
@@ -450,9 +457,9 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
                       type="button"
                       // The ORDER NOW ring breathes (tl-dot--alert): in a portfolio of
                       // eight lanes the static ring alone loses the race for attention.
-                      className={`tl-dot${m.orderNow ? ' tl-dot--alert' : ''}`}
-                      title={`${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)} · drag to reschedule`}
-                      aria-label={`${lane.project.name} — ${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}`}
+                      className={`tl-dot${m.orderNow ? ' tl-dot--alert' : ''}${fmOverdue ? ' tl-dot--fm-alert' : ''}`}
+                      title={`${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}${fmOverdue ? ' (passed — not confirmed)' : ''} · drag to reschedule${fm ? ' · click to confirm measured' : ''}`}
+                      aria-label={`${lane.project.name} — ${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}${fmOverdue ? ' — passed, not confirmed' : ''}`}
                       onMouseEnter={() => setHover({ laneIdx, msIdx })}
                       onMouseLeave={() => setHover(null)}
                       onPointerDown={(e) => {
@@ -479,6 +486,11 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
                             + `\n\nThis publishes ${m.kind === 'all' ? 'those packages' : 'that package'} to the report — any other pending edits in it go too. Undo is available right after.`;
                           if (window.confirm(msg)) onSetDate(lane.project.id, m.wpId, iso, m.kind === 'fm' ? 'fieldDate' : 'onsite');
                         } else if (big) onJumpProject(lane.project.id);
+                        // A ◆ that only leaves when the visit is confirmed has to offer the
+                        // confirmation where it sits, so on this one dot the click means
+                        // "we measured" instead of "open the item" — the item is still one
+                        // click away through the lane label. Drag still reschedules.
+                        else if (fm && m.wpId) onConfirmFm(m.wpId, m.label, m.date);
                         else onJumpItem(lane.project.id, m.itemId);
                       }}
                       style={{
@@ -516,10 +528,16 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate }: {
                           a supply-only project, "All Material Required" otherwise. */}
                       <div style={{ color: m.kind === 'fm' ? 'var(--brand-orange)' : 'var(--brand-teal)' }}>{m.kind === 'all' ? `✅ ${m.label}` : m.kind === 'fm' ? `◆ Field measurements — ${m.label}` : m.label}</div>
                       <div style={{ color: 'rgba(255,255,255,0.8)', font: 'var(--text-mono-sm)', whiteSpace: 'nowrap' }}>{m.kind === 'fm' ? 'Measure' : 'Req.'} {fmtMDY(m.date)}</div>
-                      {m.date < today() && <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>⏰ Req. date passed — pinned to today</div>}
+                      {m.date < todayISO && (
+                        <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>
+                          {m.kind === 'fm' ? '⏰ Visit date passed — pinned until confirmed' : '⏰ Req. date passed — pinned to today'}
+                        </div>
+                      )}
                       {m.orderNow && <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>⚠ has ORDER NOW items</div>}
                       {!m.orderNow && m.complete && <div style={{ color: 'var(--brand-teal)', font: 'var(--text-mono-sm)' }}>✓ all items closed out</div>}
-                      <div style={{ color: 'rgba(255,255,255,0.55)', font: 'var(--text-mono-sm)', marginTop: 3 }}>↔ drag to reschedule · click to open</div>
+                      <div style={{ color: 'rgba(255,255,255,0.55)', font: 'var(--text-mono-sm)', marginTop: 3 }}>
+                        ↔ drag to reschedule · {m.kind === 'fm' ? 'click: measurements taken ✓' : 'click to open'}
+                      </div>
                       <span style={{
                         position: 'absolute', top: '100%', left: `${anchor}%`, transform: 'translateX(-50%)',
                         width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent',
@@ -695,18 +713,24 @@ export function OverviewScreen() {
     // item (buy it now); the timeline pins them to today. Everything else past is dropped.
     const todayISO = today();
     const visible = wpMilestones.filter((m) => m.date >= todayISO || m.orderNow);
-    // Field Measurements — one orange ◆ per package with a fieldDate (earliest wins if
-    // items disagree; the toolbar popover nudges toward one date per package). Past
-    // visits drop off. Kept out of the "All Material Required" collapse on purpose.
+    // Field Measurements — one orange ◆ per package with an OPEN visit (earliest wins if
+    // items disagree; the toolbar popover nudges toward one date per package). Kept out of
+    // the "All Material Required" collapse on purpose.
+    //
+    // A past visit does NOT drop off — it stays, pinned to today by the clamp in `frac`,
+    // until someone confirms the measurements were taken (Field measurements → Approved,
+    // from the ◆ itself or from the modal). Dropping it on the date was the bug: the one
+    // milestone that needs a human to physically go somewhere was also the one that
+    // disappeared by itself, so a visit nobody made left no trace anywhere.
     const fmByWp = new Map<string, typeof timelineItems>();
-    timelineItems.filter((x) => x.pkg.projectId === project.id && x.i.fieldDate).forEach((x) => {
+    timelineItems.filter((x) => x.pkg.projectId === project.id && fieldMeasurePending(x.i)).forEach((x) => {
       const g = fmByWp.get(x.pkg.id);
       if (g) g.push(x); else fmByWp.set(x.pkg.id, [x]);
     });
     const fmMilestones: Milestone[] = [...fmByWp.values()].map((xs) => {
       const earliest = [...xs].sort((a, b) => a.i.fieldDate.localeCompare(b.i.fieldDate))[0];
       return { date: earliest.i.fieldDate, label: earliest.pkg.label, kind: 'fm' as const, itemId: earliest.i.id, wpId: earliest.pkg.id, orderNow: false, complete: false };
-    }).filter((m) => m.date >= todayISO).sort((a, b) => a.date.localeCompare(b.date));
+    }).sort((a, b) => a.date.localeCompare(b.date));
     if (visible.length === 0 && fmMilestones.length === 0) return { project, milestones: [] };
     const allSame = visible.length > 0 && visible.every((m) => m.date === visible[0].date);
     const milestones: Milestone[] = allSame && visible.length > 1
@@ -737,6 +761,28 @@ export function OverviewScreen() {
     // the undo snapshot is taken before either, so one Undo reverts the whole thing.
     if (wpId) actions.savePackageToReport(wpId);
     else actions.saveAllToReport(projectId);
+  };
+
+  // Confirm a field-measure visit from the ◆ itself — the other half of the anchor: if the
+  // dot refuses to leave until someone says the measurements were taken, saying so has to
+  // be reachable from where the dot is. Writes the same thing the Breakdown Submittals
+  // modal writes (fieldStatus: 'approved'), scoped to the items of that package that
+  // actually have the visit open, and publishes in the same gesture like every other
+  // Overview write. `fieldReq` is left alone on purpose: requiring the component is about
+  // blocking the ORDER and is the PM's call in the modal, not something a "yes, we
+  // measured" click gets to decide.
+  const confirmFieldMeasure = (wpId: string, wpLabel: string, date: string) => {
+    const ids = db.items.filter((i) => i.wpId === wpId && fieldMeasurePending(i)).map((i) => i.id);
+    if (!ids.length) return;
+    const ok = window.confirm(
+      `Field measurements for "${wpLabel}" taken?  (scheduled ${fmtMDY(date)})`
+      + `\n\nMarks Field measurements as Approved on ${ids.length} item${ids.length === 1 ? '' : 's'} and drops the ◆ from the timeline.`
+      + ` Not measured yet? Cancel and drag the ◆ to the new date instead.`
+      + `\n\nThis publishes ${wpLabel} to the report — any other pending edits in it go too. Undo is available right after.`,
+    );
+    if (!ok) return;
+    actions.bulkEditItems(ids, { fieldStatus: 'approved' });
+    actions.savePackageToReport(wpId);
   };
 
   // ---- ⏰ Late deliveries: promised by the vendor, past that date, still not here ----
@@ -1001,14 +1047,14 @@ export function OverviewScreen() {
               <div style={sectionTitle}>🗓 Timeline</div>
               <div
                 style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}
-                title="Fixed 6-month window from today. Overdue dates show only when they still have ORDER NOW items, and are pinned to today. Confirming a drag publishes the package to the report — no second save needed."
+                title="Fixed 6-month window from today. Overdue Req. dates show only when they still have ORDER NOW items, and are pinned to today; an unconfirmed ◆ field-measure visit is always pinned there. Confirming a drag — or a ◆ — publishes the package to the report, no second save needed."
               >
-                6 months from today · hover for detail · click to open · <strong>drag a dot to reschedule</strong>
+                6 months from today · hover for detail · click to open · <strong>drag a dot to reschedule</strong> · click a ◆ once measured
               </div>
             </div>
             <TimelineLegend />
           </div>
-          <ReqDateTimeline lanes={lanes} onJumpItem={jumpToItem} onJumpProject={jumpProject} onSetDate={setMilestoneDate} />
+          <ReqDateTimeline lanes={lanes} onJumpItem={jumpToItem} onJumpProject={jumpProject} onSetDate={setMilestoneDate} onConfirmFm={confirmFieldMeasure} />
         </div>
       </div>
 

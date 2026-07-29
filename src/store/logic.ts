@@ -124,6 +124,16 @@ export function submittalBlockers(r: SubR): string[] {
   if (r.otherReq && r.otherStatus !== 'approved') out.push(r.otherNote.trim() ? `Other (${r.otherNote.trim()})` : 'Other');
   return out;
 }
+/** A scheduled field-measure visit that nobody has confirmed yet. The date is a PLAN,
+ * not a record: it says when we mean to go, never that we went. The one thing that says
+ * the measurements were actually taken is the Field measurements component reading
+ * Approved — so until it does, the visit is still open and its ◆ stays on the Overview
+ * timeline, pinned to today once the date is past. `fieldReq` deliberately does NOT gate
+ * this: an unrequired component is one that doesn't block the ORDER, which has nothing to
+ * do with whether the crew went out. */
+export function fieldMeasurePending(r: Pick<ReportSnapshot, 'fieldDate' | 'fieldStatus'>): boolean {
+  return !!r.fieldDate && r.fieldStatus !== 'approved';
+}
 /** Item still awaiting submittal approval — drives the optional client-PDF summary:
  * not yet delivered and at least one submittal component (product data, samples, shop
  * drawings, field measurements, other) unapproved. */
@@ -615,6 +625,14 @@ export function applyItemPatch(it: MaterialItem, patch: Partial<MaterialItem>): 
     } else {
       next.ordered = po !== '';
     }
+  }
+  // A NEW field-measure date re-opens the confirmation. Rescheduling an already approved
+  // package — the second visit, because the wall moved or the dimensions came back wrong
+  // — has to put the component back to Pending, or the ◆ would never return to the
+  // timeline and the visit would be invisible. An explicit fieldStatus in the same patch
+  // wins: that caller is stating the status, not scheduling.
+  if ('fieldDate' in patch && !('fieldStatus' in patch) && next.fieldDate && next.fieldDate !== it.fieldDate) {
+    next.fieldStatus = 'pending';
   }
   if (next.delivered && !it.delivered && hasOpenBackorder(next)) next.delivered = false;
   // Received-date stamp: the first flip to delivered stamps today (unless the patch

@@ -53,8 +53,27 @@
   animation: tlPulse 2.4s ease-in-out infinite;
 }
 
+/* Visita de field measure cuya fecha ya pasó y que nadie confirmó. Late igual que el hito
+ * en rojo, pero en su propio naranja: el ◆ queda clavado sobre la línea de TODAY hasta que
+ * alguien diga que se tomaron, y clavado + estático es justo como se olvida una visita a
+ * obra. Mismo truco que arriba: se anima `filter` porque el `box-shadow` lo tiene ocupado
+ * el anillo de estado (inline). */
+@keyframes tlPulseFm {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(255, 143, 0, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 5px rgba(255, 143, 0, 0.95));
+  }
+}
+.tl-dot--fm-alert {
+  animation: tlPulseFm 2.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .tl-dot--alert {
+  .tl-dot--alert,
+  .tl-dot--fm-alert {
     animation: none;
   }
   .tl-lane {

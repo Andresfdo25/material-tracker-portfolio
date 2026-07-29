@@ -12,7 +12,7 @@ import type { Db, DeliveryRecord, MaterialItem, ReportSnapshot } from './types';
 import { VENDORS_SEED } from '../seed/catalogs';
 import {
   addDays, addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, awaitingInstall, backorderQty, closesAtSite, closingStage,
-  computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, diffDays, fmtDays, fmtFileStamp, fmtLong, fmtMDY,
+  computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, diffDays, fieldMeasurePending, fmtDays, fmtFileStamp, fmtLong, fmtMDY,
   hasOpenBackorder, INSTALL_DEFAULTS, installCap, isClosed, isPartial, isPartiallyInstalled, itemDirty, itemStage, logDrivesStage, matchVendor,
   migrateDb, normalizeUm, normQty, parseISO, pendingInstallQty, prefixCompare, projectClosesAtSite, removeDeliveryFrom,
   removeInstallFrom, REPORT_FIELDS, snapshot, splitDescription, stagePatch, SUBMITTAL_DEFAULTS, submittalApproved,
@@ -460,6 +460,31 @@ describe('submittalApproved / submittalBlockers', () => {
   });
 });
 
+describe('fieldMeasurePending — the visit is open until someone says they measured', () => {
+  it('no scheduled visit, nothing pending', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '' }))).toBe(false);
+    expect(fieldMeasurePending(snap({ fieldDate: '', fieldStatus: 'pending' }))).toBe(false);
+  });
+
+  it('a scheduled visit stays open while the component is not approved', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-08-01', fieldStatus: 'pending' }))).toBe(true);
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-08-01', fieldStatus: 'revise' }))).toBe(true);
+  });
+
+  it('Approved closes it — that IS the confirmation', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-08-01', fieldStatus: 'approved' }))).toBe(false);
+  });
+
+  it('a date already past is still open — the calendar never confirms anything', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-06-01', fieldStatus: 'pending' }))).toBe(true);
+  });
+
+  it('`fieldReq` does not gate it: not required to order ≠ already measured', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-08-01', fieldReq: false, fieldStatus: 'pending' }))).toBe(true);
+    expect(submittalBlockers(snap({ fieldDate: '2026-08-01', fieldReq: false, fieldStatus: 'pending' }))).toEqual([]);
+  });
+});
+
 /* ======================================================== 7. date traps (§3.2.7) */
 
 describe('dates — today() is LOCAL, the math is UTC, and it must stay that way', () => {
@@ -622,6 +647,29 @@ describe('applyItemPatch — every cascade the grid relies on', () => {
     const before = item({ notes: 'keep me', vendor: 'Northline Fixtures Co.' });
     const after = applyItemPatch(before, { description: 'New description' });
     expect(after).toMatchObject({ notes: 'keep me', vendor: 'Northline Fixtures Co.', description: 'New description' });
+  });
+
+  // Scheduling a SECOND visit on a package whose measurements were already confirmed has
+  // to re-open the confirmation, or its ◆ would never come back and the new visit would
+  // exist nowhere on screen.
+  it('a new field-measure date re-opens the confirmation', () => {
+    const done = item({ fieldDate: '2026-06-01', fieldStatus: 'approved' });
+    expect(applyItemPatch(done, { fieldDate: '2026-08-20' }).fieldStatus).toBe('pending');
+  });
+
+  it('re-applying the SAME date confirms nothing and re-opens nothing', () => {
+    const done = item({ fieldDate: '2026-06-01', fieldStatus: 'approved' });
+    expect(applyItemPatch(done, { fieldDate: '2026-06-01' }).fieldStatus).toBe('approved');
+  });
+
+  it('clearing the date leaves the component status alone', () => {
+    const done = item({ fieldDate: '2026-06-01', fieldStatus: 'approved' });
+    expect(applyItemPatch(done, { fieldDate: '' })).toMatchObject({ fieldDate: '', fieldStatus: 'approved' });
+  });
+
+  it('an explicit fieldStatus in the same patch wins over the re-open', () => {
+    const out = applyItemPatch(item({ fieldDate: '2026-06-01' }), { fieldDate: '2026-08-20', fieldStatus: 'approved' });
+    expect(out.fieldStatus).toBe('approved');
   });
 });
 
