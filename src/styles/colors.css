@@ -49,6 +49,12 @@
   /* ---- Semantic ---- */
   --link: #1b61c9;
   --link-active: #1a3866;
+  /* The same blue doing the OTHER job: a fill with white text on top (Button's `legal`
+   * variant), not text on the canvas. It needs its own token because --link is
+   * re-declared for dark mode — and the lighter value that makes link TEXT legible there
+   * would drop white-on-blue to 2.9:1. Identical hex in light mode, where the two jobs
+   * happen to want the same color; they part ways below. */
+  --link-fill: #1b61c9;
   --info: #254fad;
   --info-border: #458fff;
   --success: #006400;
@@ -83,6 +89,16 @@
    * A cool slate distinct from the warm-beige needs-data and near-white planned. */
   --status-na: #d3dae6;
   --status-na-ink: #46536a;
+
+  /* ---- Aging bands (Supply Only delivery status) — how long the material has been
+   * sitting received. A DIFFERENT question from the semaphore next to it, so a different
+   * family: desaturated siblings of order-soon/order-now, one step quieter, so a
+   * 20-day-old crate never shouts as loud as a real ORDER NOW. Theme-flat like the rest
+   * of the status pastels (pastel + own ink), so no dark-mode re-declaration. */
+  --wait-warn: #ecdcb6;
+  --wait-warn-ink: #6f5314;
+  --wait-late: #ecc6bf;
+  --wait-late-ink: #7d2e1f;
 
   --input-highlight: #fff3b0;
 
@@ -120,6 +136,15 @@
   --wp-bar: #26314a;
   --wp-bar-border: #3a4a6b;
   --wp-dirty-ink: #f4c163;
+
+  /* Link blue is TEXT on --canvas, so it travels with the neutrals, not with the status
+   * pastels: #1b61c9 measures 2.7:1 on #1b2233 — under AA (4.5:1) and under even the 3:1
+   * large-text floor. Same hue (~216 deg), lifted until it clears AA with room to spare.
+   * The hover has to INVERT here. On white, --link-active works by getting darker; on the
+   * dark canvas that same #1a3866 measured 1.4:1. Brightening is what "active" means here.
+   * --link-fill deliberately does NOT follow: see its note in the light block. */
+  --link: #6399ee;        /* 5.5:1 on --canvas */
+  --link-active: #89b4f5; /* 7.5:1 on --canvas */
 }
 
 /* Highlighted rows (Material List) keep their light-mode look in dark mode: the
@@ -130,6 +155,8 @@
   --ink: #181d26;
   --body: #333840;
   --muted: #41454d;
+  --link: #1b61c9;
+  --link-active: #1a3866;
   --canvas: #ffffff;
   --surface-soft: #f8fafc;
   --surface-strong: #e0e2e6;

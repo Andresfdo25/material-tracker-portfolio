@@ -53,7 +53,10 @@ export function Button({
     primary: { background: 'var(--primary)', color: 'var(--on-primary)', borderColor: 'transparent', boxShadow: disabled ? 'none' : 'var(--shadow-button)' },
     secondary: { background: 'var(--canvas)', color: 'var(--ink)', borderColor: disabled ? 'var(--border-strong)' : 'var(--hairline)' },
     ghost: { color: 'var(--ink)' },
-    legal: { background: 'var(--link)', color: 'var(--on-primary)', borderColor: 'transparent', font: 'var(--text-legal)' },
+    // `--link-fill`, not `--link`: this is the blue as a BACKGROUND under white text, and
+    // --link is re-declared lighter in dark mode so it survives as text on the canvas.
+    // Pointing at it here would take white-on-blue from 5.8:1 down to 2.9:1.
+    legal: { background: 'var(--link-fill)', color: 'var(--on-primary)', borderColor: 'transparent', font: 'var(--text-legal)' },
   };
   return (
     <button

@@ -558,6 +558,20 @@ export function daysWaiting(it: Pick<ReportSnapshot, 'receivedDate'>): number | 
   return it.receivedDate ? diffDays(today(), it.receivedDate) : null;
 }
 
+/* Aging bands for material that is received but not closed out yet — the question the
+ * supply-only table exists to answer. NOT a fourth clock: the three clocks each read a
+ * promised DATE and say whether it has passed, while this one reads elapsed time against
+ * a fixed rule of thumb — two weeks is worth a look, four weeks means someone has to move
+ * it. It deliberately does NOT use the `window` threshold: that one belongs to the three
+ * clocks and widening it should not repaint a column about how long a crate has been in
+ * the warehouse. */
+export type WaitSeverity = 'warning' | 'urgent';
+export function waitSeverity(days: number | null): WaitSeverity | null {
+  if (days == null) return null;
+  if (days > 30) return 'urgent';
+  return days >= 14 ? 'warning' : null;
+}
+
 export function computeItem(it: ReportSnapshot, cfg?: Cfg): ComputedItem {
   const windowDays = cfg?.window ?? 7;
   const hasLead = it.lead !== '' && it.lead != null && !isNaN(Number(it.lead));
