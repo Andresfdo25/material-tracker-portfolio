@@ -453,6 +453,52 @@ export function stagePatch(stage: string, date: string, it: StageWriteTarget): P
   return {};
 }
 
+/** Which stage moves an item accepts RIGHT NOW, already arbitrated against `stagePatch`
+ * (lote 64). It exists because the verdict is DOMAIN, not presentation: several surfaces of
+ * the Overview board offer stage buttons — the mosaic's per-package modal, the late
+ * deliveries modal, and the rows inside them — and each one re-deriving "would this write
+ * land?" is how a button ends up looking clickable and doing nothing.
+ *
+ * `installVia` says HOW the installed close happens, not just whether: once the item has an
+ * installation log, that log owns `installed` (CLAUDE.md invariant) and a `setItemStage` would
+ * be overwritten inside the same patch, so the close has to be registered as units. */
+export interface StageMoves {
+  /** Mark it received into the warehouse. Only from 'pending'. */
+  toWarehouse: boolean;
+  /** Mark it on site. In a supply-only package THIS is the close-out. */
+  toSite: boolean;
+  /** Close it out as installed — always '' in a supply-only package (somebody else
+   * installs it) and once it is already installed. */
+  installVia: 'stage' | 'install-log' | '';
+  /** Why a manual stage write would be refused here ('' = it lands). Carried even when
+   * some move IS available, because it is a per-button answer: an OFCI item takes the
+   * install button and refuses warehouse, and the disabled button has to say which of the
+   * three reasons it is. */
+  stageBlocked: '' | 'log' | 'backorder' | 'ofci';
+}
+export function stageMoves(it: MaterialItem, supplyOnly = false): StageMoves {
+  const logOwns = logDrivesStage(it.deliveries);
+  const ofci = isOfci(it.po);
+  // The two reasons `stagePatch` refuses to write the RECEIPT — owner-furnished material
+  // and a half-arrived order. They only matter while the item is not received yet: moving
+  // an already-received crate to the jobsite writes `siteDate` and nothing else.
+  const noReceipt = ofci || hasOpenBackorder(it);
+  const stage = itemStage(it);
+  const toWarehouse = !logOwns && !noReceipt && stage === 'pending';
+  const toSite = !logOwns && (stage === 'warehouse' || (stage === 'pending' && !noReceipt));
+  const room = pendingInstallQty(it);
+  const viaLog = it.installations.length > 0 || logOwns;
+  const installVia: StageMoves['installVia'] = supplyOnly || it.installed ? ''
+    : viaLog ? (room != null && room > 0 ? 'install-log' : '')
+      : 'stage';
+  return {
+    toWarehouse,
+    toSite,
+    installVia,
+    stageBlocked: logOwns ? 'log' : ofci ? 'ofci' : hasOpenBackorder(it) ? 'backorder' : '',
+  };
+}
+
 /** The statuses the UI offers as filters, in the order they are shown — the status
  * filter bar and the per-package chips both walk this list. */
 export const FILTERABLE: ItemStatus[] = ['order-now', 'order-soon', 'needs-data', 'planned', 'ordered', 'partial', 'delivered', 'on-site', 'installed', 'na'];
@@ -890,9 +936,16 @@ export function applyItemPatch(it: MaterialItem, patch: Partial<MaterialItem>): 
     next.fieldStatus = 'pending';
   }
   if (next.delivered && !it.delivered && hasOpenBackorder(next)) next.delivered = false;
-  // Received-date stamp: the first flip to delivered stamps today (unless the patch
-  // itself carries a date); un-receiving clears it. Manual receivedDate edits pass through.
-  if (next.delivered && !it.delivered && !next.receivedDate) next.receivedDate = today();
+  // Received-date stamp: the first flip to delivered stamps the day it happened; un-receiving
+  // clears it. Manual receivedDate edits pass through.
+  //
+  // "The day it happened" is today only when nothing else in the patch says otherwise. A
+  // patch that moves the item straight to on-site carries the day the truck unloaded THERE,
+  // and that is the same event as the receipt — stamping today instead would record when the
+  // PM clicked rather than when the material showed up (lote 64).
+  if (next.delivered && !it.delivered && !next.receivedDate) {
+    next.receivedDate = ('siteDate' in patch && next.siteDate) ? next.siteDate : today();
+  }
   if (!next.delivered && it.delivered && !('receivedDate' in patch)) next.receivedDate = '';
   // ---- Install cycle: warehouse → jobsite → installed ----
   // Marking INSTALLED on an item that was never received implies the receipt (material
@@ -908,7 +961,9 @@ export function applyItemPatch(it: MaterialItem, patch: Partial<MaterialItem>): 
   //    reads as installed and still owes material, which is the truth.
   if ('installed' in patch && next.installed && !next.delivered && !isOfci(next.po) && !hasOpenBackorder(next)) {
     next.delivered = true;
-    if (!next.receivedDate) next.receivedDate = today();
+    // Same rule as the stamp above: the implied receipt happened on the day it went up, not
+    // on the day somebody typed it in.
+    if (!next.receivedDate) next.receivedDate = next.installedDate || today();
   }
   // Un-receiving invalidates everything downstream — it never reached the site, let
   // alone the wall. (OFCI is exempt: its `delivered` is forced false by design.) The
