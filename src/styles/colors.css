@@ -15,6 +15,11 @@
   /* Legacy alias — band styles referenced the old corporate navy; keep them on-palette.
    * (PrintReport keeps its own hex navy: the PDF mimics the client's Excel template.) */
   --brand-navy: var(--brand-dark);
+  /* The Material List band. Comes from --brand-dark in light mode, but gets its own token
+   * because it CANNOT follow it in dark: #312051 on the #1b2233 canvas measures 1.1:1 and
+   * the band disappears against the page. Re-declared further below, lighter. --brand-dark
+   * stays the brand purple elsewhere (timeline tooltip, titles) and doesn't move with it. */
+  --band-bg: var(--brand-dark);
 
   /* ---- Ink / text ---- */
   --ink: #181d26;
@@ -158,6 +163,9 @@
   --border-strong: #56617a;
   --brand-mint: #0f1520;
   --title: #d8ccff;
+  /* The band, lighter than the brand purple: 1.8:1 against --canvas (vs 1.1:1 for #312051,
+   * which made it invisible) and 8.7:1 with the white title on top of it. */
+  --band-bg: #543f80;
   --input-highlight: #4d4620;
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.4);
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.55);

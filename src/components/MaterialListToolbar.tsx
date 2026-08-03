@@ -100,7 +100,7 @@ export function MaterialListToolbar({
   return (
     <div className="sticky-toolbar no-print">
       {/* Brand band — everything project-scoped lives here (mockup 07142026) */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, background: 'var(--brand-dark)', borderRadius: 'var(--radius-md)', padding: '14px 18px 12px', boxShadow: 'var(--shadow-card)' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, background: 'var(--band-bg)', borderRadius: 'var(--radius-md)', padding: '14px 18px 12px', boxShadow: 'var(--shadow-card)' }}>
         {/* Row 1 — title/subtitle (left) · project switcher + lifecycle (right) */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 280 }}>

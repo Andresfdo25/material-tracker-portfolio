@@ -13,7 +13,7 @@ import { presetListFilter } from '../store/listFilter';
 import { LateDeliveriesModal, PartialDeliveryModal, AwaitingCloseModal } from '../components/OverviewClockModals';
 import { PackageCloseOutModal, type PackageItemRow } from '../components/PackageCloseOutModal';
 import type { MoveTarget } from '../components/StageMoveButtons';
-import { ItemQuickEditModal, type QuickEditPatch, type QuickEditRow } from '../components/ItemQuickEditModal';
+import { ItemQuickEditModal, type QuickEditPatch, type QuickEditRow, type QuickEditVariant } from '../components/ItemQuickEditModal';
 import { ConfirmDateModal, type DatePrompt } from '../components/ConfirmDateModal';
 import { card, td, tdL, th, thL } from '../components/ds/overviewTable';
 
@@ -965,7 +965,7 @@ export function OverviewScreen() {
   const [pkgModal, setPkgModal] = useState<{ projectId: string; wpId: string } | null>(null);
   // The quick-edit window, likewise by coordinates — which items and what title, never
   // the values themselves.
-  const [quickEdit, setQuickEdit] = useState<{ title: string; caption: string; ids: string[] } | null>(null);
+  const [quickEdit, setQuickEdit] = useState<{ title: string; caption: string; ids: string[]; variant: QuickEditVariant } | null>(null);
   // The date a board write is waiting on. One state for every button that moves material:
   // each builds its own `DatePrompt` (text + `onConfirm`) and the modal only asks the day.
   const [datePrompt, setDatePrompt] = useState<DatePrompt | null>(null);
@@ -1541,16 +1541,20 @@ export function OverviewScreen() {
       title: `${projectName} · ${label}`,
       caption: `${ids.length} item${ids.length === 1 ? '' : 's'} counted under ${label}.`,
       ids,
+      variant: 'full',
     });
   };
   /** The Buy-By table's count, the other half of the same request: register the PO and
-   * its date without leaving the board. Same window, different trigger. */
+   * its date without leaving the board. Same window, different trigger — and in the `'po'`
+   * variant, because an item that already has a buy-by has Lead and On-Site loaded by
+   * definition: the only thing missing here is the order. */
   const openBuyByEdit = (title: string, rows: Enriched[]) => {
     if (!rows.length) return;
     setQuickEdit({
       title,
       caption: `${rows.length} item${rows.length === 1 ? '' : 's'} to order within the next 14 days — a PO # here takes them off the list.`,
       ids: rows.map((x) => x.i.id),
+      variant: 'po',
     });
   };
   // `--alert-ink`: la fecha vencida se pinta sobre `--canvas`, sin pastel debajo.
@@ -1982,6 +1986,7 @@ export function OverviewScreen() {
         <ItemQuickEditModal
           title={quickEdit.title}
           caption={quickEdit.caption}
+          variant={quickEdit.variant}
           rows={quickRows}
           onClose={() => setQuickEdit(null)}
           onJumpItem={(itemId) => {
