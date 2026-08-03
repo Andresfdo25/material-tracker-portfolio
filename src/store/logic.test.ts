@@ -11,7 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { Db, DeliveryRecord, MaterialItem, Project, ReportSnapshot, WorkPackage } from './types';
 import { VENDORS_SEED } from '../seed/catalogs';
 import {
-  addDays, addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, awaitingInstall, backorderQty, closesAtSite, closingStage,
+  addDays, addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, awaitingInstall, backorderQty, closesAtSite, closeVia, closingStage,
   computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, detourOf, diffDays, fieldMeasurePending, fmtDays, fmtFileStamp, fmtLong, fmtMDY,
   hasOpenBackorder, INSTALL_DEFAULTS, installCap, isClosed, isPartial, isPartiallyInstalled, itemDirty, itemStage, logDrivesStage, matchVendor,
   migrateDb, mosaicCards, normalizeUm, normQty, packageProgressFlag, parseISO, pendingInstallQty, prefixCompare, progressPct, projectClosesAtSite, removeDeliveryFrom,
@@ -392,6 +392,42 @@ describe('closesAtSite / projectClosesAtSite / isClosed / awaitingInstall', () =
     expect(itemStage(snap({ delivered: true }))).toBe('warehouse');
     expect(itemStage(snap({ delivered: true, siteDate: '2026-07-10' }))).toBe('on-site');
     expect(itemStage(snap({ delivered: false, installed: true }))).toBe('installed');
+  });
+});
+
+describe('closeVia — what closes an item awaiting site/install, against its live draft (lote 63)', () => {
+  const draft = (over: Partial<ReportSnapshot> = {}, deliveries: DeliveryRecord[] = [], installations: { qty: number; note: string; date: string }[] = []) =>
+    ({ ...snap(over), deliveries, installations });
+
+  it('install scope: warehouse releases to on site, on site closes as installed', () => {
+    expect(closeVia(draft({ delivered: true }), false)).toBe('on-site');
+    expect(closeVia(draft({ delivered: true, siteDate: '2026-07-10' }), false)).toBe('installed');
+  });
+
+  it('install scope: already installed has nothing left to close', () => {
+    expect(closeVia(draft({ delivered: false, installed: true }), false)).toBe(null);
+  });
+
+  it('supply-only: warehouse closes straight to on site, on site has nothing left', () => {
+    expect(closeVia(draft({ delivered: true }), true)).toBe('on-site');
+    expect(closeVia(draft({ delivered: true, siteDate: '2026-07-10' }), true)).toBe(null);
+  });
+
+  it('the delivery log owns the stage — a manual close is refused, not offered', () => {
+    const withLog = draft({ delivered: true }, [{ qty: 5, note: '', date: '2026-07-10', kind: 'wh-in' }]);
+    expect(closeVia(withLog, false)).toBe(null);
+    expect(closeVia(withLog, true)).toBe(null);
+  });
+
+  it('nothing received yet: no close action', () => {
+    expect(closeVia(draft({ delivered: false }), false)).toBe(null);
+  });
+
+  it('the INSTALL log owns `installed` the same way the delivery log owns `delivered' + "'" + ` — a manual close is refused, not offered, once it has entries`, () => {
+    const withInstallLog = draft({ delivered: true, siteDate: '2026-07-10' }, [], [{ qty: 1, note: '', date: '2026-07-12' }]);
+    expect(closeVia(withInstallLog, false)).toBe(null);
+    // Warehouse → on site is unaffected — that write never touches `installed`.
+    expect(closeVia(draft({ delivered: true }, [], [{ qty: 1, note: '', date: '2026-07-12' }]), false)).toBe('on-site');
   });
 });
 

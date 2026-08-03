@@ -14,6 +14,7 @@ import {
   closesAtSite, computeItem, deliveryLogRows, deliveryWatch, FILTERABLE, fmtFileStamp, fmtMDY, pendingSubmittalApproval, pkgDirty, today,
 } from '../store/logic';
 import { loadJSON, saveJSON } from '../store/persist';
+import { LIST_FILTER_KEY } from '../store/listFilter';
 import { usePersisted } from '../store/usePersisted';
 import type { Cfg, ExportMode, ItemStatus, MaterialItem } from '../store/types';
 import { Button } from '../components/ds/Button';
@@ -55,7 +56,10 @@ export function MaterialListScreen() {
   // Chrome/Edge/Safari seed the "Save as PDF" filename from document.title, so the
   // export swaps it in for the duration of the print dialog (see the print effect).
   const printTitleRef = useRef('');
-  const [filter, setFilter] = useState<ItemStatus[]>([]);
+  // Overview's purchasing gauges pre-load this same persisted key before navigating here
+  // (store/listFilter.ts) — the filter that survives a reload now also survives a jump
+  // from the board.
+  const [filter, setFilter] = usePersisted<ItemStatus[]>(LIST_FILTER_KEY, []);
   // ⏰ Late deliveries — its own axis, so its own state (see isLate below).
   const [lateOnly, setLateOnly] = useState(false);
   const [pkgFilter, setPkgFilter] = useState<Record<string, ItemStatus[]>>({});
@@ -132,7 +136,7 @@ export function MaterialListScreen() {
       clearFocusItem();
     }, 300);
     return () => clearTimeout(t);
-  }, [focusItemId, clearFocusItem, db.items, setCollapsed]);
+  }, [focusItemId, clearFocusItem, db.items, setCollapsed, setFilter]);
 
   const activeProjects = db.projects
     .filter((p) => !p.archived)

@@ -495,6 +495,28 @@ export function awaitingInstall(it: StageR, supplyOnly = false): boolean {
   return it.delivered && !isClosed(it, supplyOnly);
 }
 
+/** What CLOSES an item currently awaiting site/install, decided against its live draft
+ * (lote 63). A supply-only package closes at 📍 on site, so a warehouse row's one move is
+ * there and an on-site row has nothing left to close via this helper. An install package
+ * closes at 🔩 installed, with an intermediate 📍 release for a row still in the
+ * warehouse. Null when the delivery log owns the stage — `stagePatch` would refuse a
+ * manual write anyway (empty patch), so the caller disables its button instead of
+ * offering a click that does nothing. */
+export function closeVia(it: Pick<MaterialItem, 'deliveries' | 'delivered' | 'siteDate' | 'installed' | 'installations'>, supplyOnly: boolean): 'on-site' | 'installed' | null {
+  if (logDrivesStage(it.deliveries)) return null;
+  const stage = itemStage(it);
+  if (supplyOnly) return stage === 'warehouse' ? 'on-site' : null;
+  if (stage === 'warehouse') return 'on-site';
+  // The INSTALL log owns `installed` the exact same way the delivery log owns
+  // `delivered` (lote 44's cascade in `applyItemPatch`, §"install QUANTITIES"): once
+  // `installations` has entries, a manual `{ installed: true }` patch is silently
+  // re-derived back off the log's own total the moment it lands. Offering the button
+  // there would look like it worked and write nothing real — register the rest through
+  // Breakdown Install instead.
+  if (stage === 'on-site') return it.installations.length ? null : 'installed';
+  return null;
+}
+
 /* How urgent it is to get an awaiting-install item to the jobsite, driven by the
  * On-Site Req. date. 'unscheduled' is the case that used to be invisible altogether:
  * computeItem short-circuits on `delivered` BEFORE the needs-data check, so a received
