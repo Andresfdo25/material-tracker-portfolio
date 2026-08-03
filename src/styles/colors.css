@@ -100,6 +100,26 @@
   --wait-late: #ecc6bf;
   --wait-late-ink: #7d2e1f;
 
+  /* ---- Installation progress mosaic — SIX IDENTITY HUES, not a scale. Colour here says
+   * *which project*, never *how it's doing*: status is carried by the bars and the
+   * numbers, so a card keeps its hue while its percentage moves (the slot comes from
+   * `stableSlot(projectId)`, not from render order). Each hue is a trio — solid for the
+   * closed segment, soft for the pending one, ink for text on the soft. Theme-flat like
+   * the semaphore pastels, so no dark-mode re-declaration: the soft tone reads on either
+   * canvas and the solid always sits next to it. */
+  --mos-blue: #2a78d6;    --mos-blue-soft: #b5d4f4;    --mos-blue-ink: #0c447c;
+  --mos-orange: #eb6834;  --mos-orange-soft: #f5c4b3;  --mos-orange-ink: #8a3418;
+  --mos-violet: #7f77dd;  --mos-violet-soft: #cecbf6;  --mos-violet-ink: #3c3489;
+  --mos-magenta: #e87ba4; --mos-magenta-soft: #f4c0d1; --mos-magenta-ink: #8a2c4b;
+  --mos-aqua: #1baf7a;    --mos-aqua-soft: #9fe1cb;    --mos-aqua-ink: #0c5c48;
+  --mos-gray: #5f5e5a;    --mos-gray-soft: #d3d1c7;    --mos-gray-ink: #2c2c2a;
+  /* The two package flags that carry a verdict (✓ complete / ⚠ not started). Unlike the
+   * hues above these are TEXT on the card surface, which flips with the theme — so they
+   * are the one pair here that needs a dark-mode value (see below). 🚚 awaiting delivery
+   * uses --muted on purpose: not a verdict, just an explanation. */
+  --mos-flag-done: #0f6e56;
+  --mos-flag-stalled: #a32d2d;
+
   --input-highlight: #fff3b0;
 
   /* ---- Highlighter row flags (Material List) — fluorescent marker tones ---- */
@@ -136,6 +156,11 @@
   --wp-bar: #26314a;
   --wp-bar-border: #3a4a6b;
   --wp-dirty-ink: #f4c163;
+
+  /* Mosaic flags — the two that are ink on the card, so they follow the canvas. The six
+   * hues above do not: they paint bars, and a bar keeps its identity in both themes. */
+  --mos-flag-done: #6fd7b4;
+  --mos-flag-stalled: #ff9b9b;
 
   /* Link blue is TEXT on --canvas, so it travels with the neutrals, not with the status
    * pastels: #1b61c9 measures 2.7:1 on #1b2233 — under AA (4.5:1) and under even the 3:1

@@ -4,7 +4,7 @@
 // logic.test.ts covers it. Row classification lives in `materialsImport.ts` (specific
 // to that import) and the demo database in `../seed/demoData.ts`.
 import { VENDORS_SEED, WP_CATALOG } from '../seed/catalogs';
-import type { Cfg, ComputedItem, Db, DeliveryKind, DeliveryRecord, InstallRecord, ItemStage, ItemStatus, MaterialItem, ReportSnapshot, SubmittalCompStatus, Thresholds, WorkPackage } from './types';
+import type { Cfg, ComputedItem, Db, DeliveryKind, DeliveryRecord, InstallRecord, ItemStage, ItemStatus, MaterialItem, Project, ReportSnapshot, SubmittalCompStatus, Thresholds, WorkPackage } from './types';
 
 /* ----------------------------------------------------------------- date utils */
 // Real "today" — this is a live tracker, not a frozen demo, so buy-by dates and the
@@ -570,6 +570,225 @@ export function waitSeverity(days: number | null): WaitSeverity | null {
   if (days == null) return null;
   if (days > 30) return 'urgent';
   return days >= 14 ? 'warning' : null;
+}
+
+/* ------------------------------------------------ installation progress mosaic
+ * SPEC-overview-redesign §4 — one card per project, one bar per work package: how far
+ * each package got toward its closing stage. It answers a DIFFERENT question from the
+ * stage table it replaces. That one lists what is already in hand; this one measures the
+ * WHOLE scope, so a package with nothing received yet still gets a bar (at 0%) and says
+ * why it is there. Everything below is pure and tested: the sort order and the two 0%/100%
+ * edges are exactly the kind of rule that rots without a word of warning inside a render. */
+
+/** Why a package sits where it does, in one word — the flag beside its name. The two
+ * zero cases are deliberately NOT the same alarm: nothing up because nobody installed it
+ * is an installation problem (⚠), nothing up because nothing arrived is a procurement one
+ * (🚚). Painting both red teaches the PM to ignore red. `null` = under way, needs no word. */
+export type PackageProgressFlag = 'complete' | 'not-started' | 'awaiting-delivery' | null;
+export function packageProgressFlag(closed: number, inHand: number, total: number): PackageProgressFlag {
+  if (!total) return null;
+  if (closed === total) return 'complete';
+  if (closed > 0) return null;
+  return inHand > 0 ? 'not-started' : 'awaiting-delivery';
+}
+
+/** The integer the bar prints. 100 and 0 are verdicts — "done" and "nothing yet" — so
+ * neither is ever reached by ROUNDING: 199 of 200 closed reads 99%, and 1 of 200 reads
+ * 1%. The segment widths use the raw ratio, so the clamp costs under a pixel and buys a
+ * number that never contradicts the flag right next to it. */
+export function progressPct(closed: number, total: number): number {
+  if (!total) return 0;
+  if (closed === total) return 100;
+  if (closed === 0) return 0;
+  return Math.min(99, Math.max(1, Math.round((closed / total) * 100)));
+}
+
+/** djb2 → a slot in [0, n). Stable per id, which is the whole point: colour encodes
+ * project IDENTITY, not status, so it must survive a re-sort. Numbering the cards in
+ * render order would repaint half the mosaic the moment one project's percentage moves
+ * it past another. */
+export function stableSlot(id: string, n: number): number {
+  let h = 5381;
+  for (let i = 0; i < id.length; i++) h = ((h << 5) + h + id.charCodeAt(i)) >>> 0;
+  return h % n;
+}
+/** How many identity hues the mosaic rotates through (`--mos-*` in colors.css). */
+export const MOSAIC_SLOTS = 6;
+
+/** One item under a badge — carried here rather than re-derived by the drill-down, so the
+ * count on the badge and the list it opens can never disagree. Render-time view model,
+ * never persisted. */
+export interface MosaicItem {
+  id: string; wpId: string; wpLabel: string; description: string;
+  qty: number | string; um: string;
+  /** Whatever date the badge is about — received, on site, installed, required on site. */
+  date: string;
+  /** One line of badge-specific detail (what is still owed, which way it travelled). */
+  note?: string;
+}
+
+/** The badge row under the bars, and it is NOT the same row in both scopes.
+ *
+ * When we install, the useful three are physical: where is the material standing right
+ * now (🏭 warehouse → 📍 on site → 🔩 installed). When we only supply, on site IS the end
+ * of the line, so those three would be the bar again; what the PM chases instead are the
+ * three things that keep material from getting there — nothing bought yet, part of the
+ * order still owed, and material that left the vendor's ideal path (through our warehouse,
+ * or pulled off our own shelves). */
+export type MosaicBadgeKey = Exclude<ItemStage, 'pending'> | 'not-ordered' | 'backorder' | 'detour';
+export interface MosaicBadge { key: MosaicBadgeKey; items: MosaicItem[] }
+const INSTALL_BADGES: MosaicBadgeKey[] = ['warehouse', 'on-site', 'installed'];
+const SUPPLY_BADGES: MosaicBadgeKey[] = ['not-ordered', 'backorder', 'detour'];
+/** How each badge introduces itself — `label` finishes the sentence "N …" in the tooltip
+ * and the aria-label, `column` titles the date column of the list it opens. */
+export const MOSAIC_BADGE_META: Record<MosaicBadgeKey, { icon: string; label: string; column: string }> = {
+  warehouse: { icon: '🏭', label: 'in the warehouse', column: 'Received' },
+  'on-site': { icon: '📍', label: 'on site, not installed yet', column: 'On site since' },
+  installed: { icon: '🔩', label: 'installed', column: 'Installed' },
+  'not-ordered': { icon: '🛒', label: 'with no PO# yet — nothing bought', column: 'On-Site Req.' },
+  backorder: { icon: '🚚', label: 'with part of the order still owed', column: 'Received' },
+  detour: { icon: '📦', label: 'off the direct route — through our warehouse or out of stock', column: 'Last movement' },
+};
+
+/** Which way this item left the straight line from the vendor to the jobsite, if it did —
+ * `null` when it went (or is still going) direct. Goes through `deliveryLogRows`, not
+ * `it.deliveries`, so a warehouse hop still counts after the material moved on to site;
+ * that helper is what turns "moved with the buttons" into a row and keeps OFCI out —
+ * owner-furnished material never travels our route, so it has no route to leave. */
+export type DetourKind = 'warehouse' | 'stock' | null;
+export function detourOf(r: ReportSnapshot, deliveries: DeliveryRecord[]): DetourKind {
+  const rows = deliveryLogRows({ ...r, deliveries });
+  if (rows.some((d) => d.kind === 'stock')) return 'stock';
+  if (rows.some((d) => d.kind === 'wh-in')) return 'warehouse';
+  return rows.some((d) => d.synthetic) && itemStage(r) === 'warehouse' ? 'warehouse' : null;
+}
+
+export interface MosaicPackage {
+  wpId: string; wpLabel: string;
+  total: number;
+  /** Reached the package's own closing stage — 🔩 installed, or 📍 on site if supply only. */
+  closed: number;
+  pending: number;
+  /** Bought (it has a PO#) and not closed yet — the middle zone of a supply-only bar. What
+   * is left over, `pending - ordered`, is material nobody has ordered at all. */
+  ordered: number;
+  /** Received, closed or not. Only used to tell the two zero cases apart. */
+  inHand: number;
+  pct: number;
+  flag: PackageProgressFlag;
+  /** Deep-link target: the first item still short of the closing stage, else the first. */
+  itemId: string;
+}
+
+export interface MosaicCard {
+  projectId: string; projectName: string;
+  /** Follows the PROJECT (`projectClosesAtSite`), like the Portfolio grouping does — it
+   * picks the header icon and which three badges the card carries. Each PACKAGE is still
+   * measured against its own closing stage, so a mixed project stays honest on one card. */
+  scope: 'install' | 'supply';
+  slot: number;
+  packages: MosaicPackage[];
+  total: number; closed: number; pct: number;
+  /** The biggest package in THIS card — bar widths are proportional within a card only:
+   * across cards a small project would shrink to a stub, and the header rollup already
+   * carries how big it is. */
+  widest: number;
+  /** Exactly three, in display order — see `MosaicBadgeKey`. */
+  badges: MosaicBadge[];
+}
+
+/** Build the mosaic. Takes the projects and packages it should chart ALREADY filtered —
+ * archived projects and the supply-only/install split are the caller's call, and each
+ * package is still measured against its own closing stage, so either scope works.
+ *
+ * Nothing is excluded from the counts: dropping "not ordered yet" items would empty the
+ * denominator of exactly the packages the 🚚 flag exists to point at. Owner-furnished
+ * material we DO install (the CI in OFCI), and the Portfolio bar counts it for that
+ * reason — two "how complete is this project" numbers with different denominators on one
+ * screen is a bug report waiting to happen. */
+export function mosaicCards(projects: Project[], packages: WorkPackage[], items: MaterialItem[]): MosaicCard[] {
+  const byWp = new Map<string, MaterialItem[]>();
+  items.forEach((it) => {
+    if (!it.report) return; // Overview reads published snapshots, here as everywhere else
+    const a = byWp.get(it.wpId);
+    if (a) a.push(it); else byWp.set(it.wpId, [it]);
+  });
+  return projects.map((project): MosaicCard | null => {
+    const own = packages.filter((p) => p.projectId === project.id);
+    const scope = projectClosesAtSite(project, own) ? 'supply' : 'install';
+    const bins = new Map<MosaicBadgeKey, MosaicItem[]>((scope === 'supply' ? SUPPLY_BADGES : INSTALL_BADGES).map((k) => [k, []]));
+    const bin = (key: MosaicBadgeKey, row: MosaicItem) => bins.get(key)?.push(row);
+    const pkgs: MosaicPackage[] = [];
+    own.forEach((pkg) => {
+      const rows = byWp.get(pkg.id) ?? [];
+      // No items at all is the data-entry state — a package somebody just created — not a
+      // package at zero progress, so it never gets a bar.
+      if (!rows.length) return;
+      const supplyOnly = closesAtSite(pkg, project);
+      let closed = 0;
+      let inHand = 0;
+      let ordered = 0;
+      let target = '';
+      rows.forEach((it) => {
+        const r = it.report!;
+        const stage = itemStage(r);
+        const done = isClosed(r, supplyOnly);
+        const base = { id: it.id, wpId: pkg.id, wpLabel: pkg.label, description: r.description, qty: r.qty, um: r.um };
+        const bought = !!String(r.po ?? '').trim(); // OFCI counts: it is nobody's left to buy
+        if (stage !== 'pending') inHand++;
+        if (done) closed++;
+        else {
+          if (!target) target = it.id;
+          if (bought) ordered++;
+        }
+        // Where it physically stands — the card's three badges when we install it.
+        if (stage !== 'pending') {
+          bin(stage, {
+            ...base,
+            date: stage === 'installed' ? r.installedDate : stage === 'on-site' ? r.siteDate : r.receivedDate,
+          });
+        }
+        // …and what is holding it up, when we only supply it. The three overlap on purpose:
+        // one crate can be un-ordered today, on backorder next month and still take the
+        // warehouse detour, and each of those is a different phone call.
+        if (!bought) bin('not-ordered', { ...base, date: r.onsite });
+        if (hasOpenBackorder(r)) {
+          const back = backorderQty(r);
+          bin('backorder', { ...base, date: r.receivedDate, note: back == null ? '' : `${back}${r.um ? ` ${r.um}` : ''} still owed` });
+        }
+        const detour = detourOf(r, it.deliveries);
+        if (detour) {
+          bin('detour', {
+            ...base,
+            date: r.siteDate || r.receivedDate,
+            note: detour === 'stock' ? 'pulled from our own stock'
+              : r.siteDate ? 'through the warehouse, now on site' : 'sitting in the warehouse',
+          });
+        }
+      });
+      pkgs.push({
+        wpId: pkg.id, wpLabel: pkg.label, total: rows.length, closed, pending: rows.length - closed,
+        ordered, inHand, pct: progressPct(closed, rows.length), flag: packageProgressFlag(closed, inHand, rows.length),
+        itemId: target || rows[0].id,
+      });
+    });
+    if (!pkgs.length) return null;
+    // Descending inside the card: the finished packages stack at the top and the stalled
+    // one sits on the bottom edge, right where the eye leaves the card.
+    pkgs.sort((a, b) => b.pct - a.pct || b.total - a.total || a.wpLabel.localeCompare(b.wpLabel, undefined, { numeric: true, sensitivity: 'base' }));
+    const total = pkgs.reduce((s, p) => s + p.total, 0);
+    const closed = pkgs.reduce((s, p) => s + p.closed, 0);
+    return {
+      projectId: project.id, projectName: project.name, scope, slot: stableSlot(project.id, MOSAIC_SLOTS),
+      packages: pkgs, total, closed, pct: progressPct(closed, total),
+      widest: Math.max(...pkgs.map((p) => p.total)),
+      badges: [...bins.entries()].map(([key, items]) => ({ key, items })),
+    };
+  })
+    .filter((c): c is MosaicCard => c !== null)
+    // And ASCENDING between cards — deliberately the other direction: the project that
+    // needs attention lands top-left, where reading starts.
+    .sort((a, b) => a.pct - b.pct || b.total - a.total || a.projectName.localeCompare(b.projectName, undefined, { numeric: true, sensitivity: 'base' }));
 }
 
 export function computeItem(it: ReportSnapshot, cfg?: Cfg): ComputedItem {

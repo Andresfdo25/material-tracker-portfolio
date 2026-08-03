@@ -3,11 +3,13 @@
 // by project → work package with item counts. All read published report snapshots.
 import { Fragment, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useApp } from '../store/useApp';
-import { awaitingInstall, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMDY, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, parseISO, projectClosesAtSite, submittalBlockers, today, type InstallUrgency } from '../store/logic';
+import { awaitingInstall, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMDY, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, parseISO, projectClosesAtSite, submittalBlockers, today, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type WaitSeverity } from '../store/logic';
 import type { ComputedItem, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
 import { StatusBadge } from '../components/ds/StatusBadge';
 import { SignatureCard } from '../components/ds/SignatureCard';
 import { Button } from '../components/ds/Button';
+import { Modal } from '../components/ds/Modal';
+import { InstallMosaic } from '../components/InstallMosaic';
 
 interface Enriched {
   i: MaterialItem;
@@ -27,13 +29,19 @@ const STATUS_RANK: Record<ItemStatus, number> = {
 /* Install urgency → sort weight for the stage tables (worst first). */
 const URGENCY_RANK: Record<InstallUrgency, number> = { overdue: 3, 'due-soon': 2, unscheduled: 1, scheduled: 0 };
 
-/* One work package that already has material in hand — the row shared by the two stage
- * tables (Installation status / Supply Only status). `closed` counts the items that
- * reached the package's closing stage; `awaiting` the ones still short of it. */
+/* One work package that already has material in hand — a row of the Detailed table under
+ * Delivery and installation status. `closed` counts the items that reached the package's
+ * closing stage; `awaiting` the ones still short of it. */
 interface StageGroup {
   key: string; projectId: string; projectName: string; wpId: string; wpLabel: string;
   items: number; warehouse: number; site: number; closed: number; awaiting: number;
-  nextOnsite: string; urgency: InstallUrgency; itemId: string; waited: number | null;
+  nextOnsite: string; urgency: InstallUrgency; itemId: string;
+  /** Longest wait among the items still short of the closing stage — the aging signal the
+   * Waiting column prints. */
+  waited: number | null;
+  /** The group's own rows, oldest wait first — what the drill-down modal lists. Carried
+   * here rather than re-derived: this is a render-time view model, never persisted. */
+  rows: Enriched[];
   supplyOnly: boolean;
 }
 interface ProjBlock { projectId: string; projectName: string; packages: StageGroup[]; awaiting: number; closed: number }
@@ -120,32 +128,193 @@ const thL: CSSProperties = { ...th, textAlign: 'left' };
 const td: CSSProperties = { textAlign: 'right', padding: '10px 12px', font: 'var(--text-mono)', color: 'var(--ink)', borderBottom: '1px solid var(--hairline)' };
 const tdL: CSSProperties = { ...td, textAlign: 'left', font: 'var(--text-body)' };
 
-/** The stage table, rendered twice: once for packages we install (closing stage 🔩) and
- * once for supply-only packages (closing stage 📍). Same shape both times — supply only
- * just drops the 🔩 column and measures the bar against "on site". */
-function StageTable({ blocks, empty, supplyOnly, collapsed, onToggle, onJumpProject, onJumpItem }: {
+/** How long an item has been sitting since it was received — read off the report, oldest
+ * first everywhere it's used. Kept as one helper so the group's `waited` number and the
+ * per-row drill list never disagree about what "waiting" means. */
+function openWait(x: Enriched): number | null {
+  return daysWaiting(x.r);
+}
+
+/** One "days waiting" cell, tinted by `waitSeverity` — a DIFFERENT question from the
+ * buy-by semaphore next to it (elapsed time, not a promised date), so it gets its own
+ * quieter family instead of borrowing the order-now/order-soon pastels. */
+function WaitCell({ days, cell = td }: { days: number | null; cell?: CSSProperties }) {
+  const sev: WaitSeverity | null = waitSeverity(days);
+  const bg = sev === 'urgent' ? 'var(--wait-late)' : sev === 'warning' ? 'var(--wait-warn)' : undefined;
+  const ink = sev === 'urgent' ? 'var(--wait-late-ink)' : sev === 'warning' ? 'var(--wait-warn-ink)' : 'var(--muted)';
+  return (
+    <td style={{ ...cell, background: bg, color: ink, fontWeight: sev ? 700 : 400 }}>
+      {days == null ? '—' : `${days}d`}
+    </td>
+  );
+}
+
+/** Per-item aging for one package — the answer to "which of these has been sitting
+ * longest?", which the group row can only summarise with its worst number. Rows are
+ * already sorted oldest-first by `stageGroups`. Covers both scopes: the finish line moves
+ * (📍 on site for supply only, 🔩 installed otherwise), the question is the same. */
+function PackageDrillModal({ group, onClose, onJumpItem }: {
+  group: StageGroup;
+  onClose: () => void;
+  onJumpItem: (projectId: string, itemId: string) => void;
+}) {
+  const thD: CSSProperties = { ...th, padding: '7px 10px' };
+  const tdD: CSSProperties = { ...td, padding: '8px 10px' };
+  const supplyOnly = group.supplyOnly;
+  const closedLabel = supplyOnly ? 'On site' : 'Installed';
+  const closedInk = supplyOnly ? 'var(--status-on-site-ink)' : 'var(--status-installed-ink)';
+  return (
+    <Modal
+      title={<span>{group.projectName} · {group.wpLabel}</span>}
+      onClose={onClose}
+      width={720}
+    >
+      <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', marginBottom: 10 }}>
+        {group.items} item{group.items === 1 ? '' : 's'} in hand · {group.closed} {supplyOnly ? 'on site' : 'installed'} · {group.awaiting} awaiting {supplyOnly ? 'the jobsite' : 'installation'}.
+        Click a row to open it in the Material List.
+      </div>
+      <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ background: 'var(--surface-soft)' }}>
+              <th style={{ ...thD, textAlign: 'left' }}>Description</th>
+              <th style={thD}>Qty</th>
+              <th style={{ ...thD, textAlign: 'left' }}>Received</th>
+              <th style={{ ...thD, textAlign: 'left' }}>{closedLabel}</th>
+              <th style={thD}>Waiting</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...group.rows].sort((a, b) => (openWait(b) ?? -1) - (openWait(a) ?? -1)).map((x) => (
+              <tr
+                key={x.i.id}
+                onClick={() => { onClose(); onJumpItem(x.projectId, x.i.id); }}
+                style={{ cursor: 'pointer' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                <td style={{ ...tdD, textAlign: 'left', font: 'var(--text-body)' }}>{x.r.description || <span style={{ color: 'var(--muted)' }}>Untitled</span>}</td>
+                <td style={{ ...tdD, whiteSpace: 'nowrap' }}>{x.r.qty === '' || x.r.qty == null ? '—' : `${x.r.qty}${x.r.um ? ` ${x.r.um}` : ''}`}</td>
+                <td style={{ ...tdD, textAlign: 'left', whiteSpace: 'nowrap' }}>
+                  {x.r.receivedQty ? `${x.r.receivedQty} ` : ''}
+                  {x.r.receivedDate ? fmtMDY(x.r.receivedDate) : <span style={{ color: 'var(--muted)' }}>no date</span>}
+                </td>
+                {/* The package's own finish line, not a fixed column: on an install row the
+                    on-site date is a waypoint, and printing it under a "closed out" heading
+                    would call half the pending list finished. */}
+                {(() => {
+                  const date = supplyOnly ? x.r.siteDate : x.r.installedDate;
+                  return (
+                    <td style={{ ...tdD, textAlign: 'left', whiteSpace: 'nowrap', color: date ? closedInk : 'var(--muted)', fontWeight: date ? 600 : 400 }}>
+                      {date ? `${supplyOnly ? '📍' : '🔩'} ${fmtMDY(date)}` : '—'}
+                    </td>
+                  );
+                })()}
+                <WaitCell days={openWait(x)} cell={tdD} />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Modal>
+  );
+}
+
+/** What a mosaic badge opens — the same question the package drill-down already answers,
+ * pointed at a different slice: not "everything in this package" but "everything under
+ * this badge in this project". Every row is still one click from the Material List. */
+function BadgeDrillModal({ card, badge, onClose, onJumpItem }: {
+  card: MosaicCard;
+  badge: MosaicBadgeKey;
+  onClose: () => void;
+  onJumpItem: (projectId: string, itemId: string) => void;
+}) {
+  const thD: CSSProperties = { ...th, padding: '7px 10px' };
+  const tdD: CSSProperties = { ...td, padding: '8px 10px' };
+  const meta = MOSAIC_BADGE_META[badge];
+  const rows = card.badges.find((b) => b.key === badge)?.items ?? [];
+  // The note column only exists where a badge fills it (what is still owed, which way the
+  // material travelled) — an empty column on the other four would be furniture.
+  const hasNote = rows.some((x) => x.note);
+  return (
+    <Modal
+      title={<span>{card.projectName} · {meta.icon} {rows.length} {meta.label}</span>}
+      onClose={onClose}
+      width={760}
+    >
+      <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', marginBottom: 10 }}>
+        Click a row to open it in the Material List.
+      </div>
+      <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ background: 'var(--surface-soft)' }}>
+              <th style={{ ...thD, textAlign: 'left' }}>Description</th>
+              <th style={{ ...thD, textAlign: 'left' }}>Work package</th>
+              <th style={thD}>Qty</th>
+              <th style={{ ...thD, textAlign: 'left' }}>{meta.column}</th>
+              {hasNote && <th style={{ ...thD, textAlign: 'left' }}>Detail</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((x) => (
+              <tr
+                key={x.id}
+                onClick={() => { onClose(); onJumpItem(card.projectId, x.id); }}
+                style={{ cursor: 'pointer' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                <td style={{ ...tdD, textAlign: 'left', font: 'var(--text-body)' }}>{x.description || <span style={{ color: 'var(--muted)' }}>Untitled</span>}</td>
+                <td style={{ ...tdD, textAlign: 'left', font: 'var(--text-body)', color: 'var(--muted)' }}>{x.wpLabel}</td>
+                <td style={{ ...tdD, whiteSpace: 'nowrap' }}>{x.qty === '' || x.qty == null ? '—' : `${x.qty}${x.um ? ` ${x.um}` : ''}`}</td>
+                <td style={{ ...tdD, textAlign: 'left', whiteSpace: 'nowrap' }}>
+                  {x.date ? fmtMDY(x.date) : <span style={{ color: 'var(--muted)' }}>no date</span>}
+                </td>
+                {hasNote && <td style={{ ...tdD, textAlign: 'left', font: 'var(--text-body)', color: 'var(--muted)' }}>{x.note || '—'}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Modal>
+  );
+}
+
+/** The stage table — every package with material in hand, both scopes in one list. Scope
+ * is a per-ROW property: it picks the closing stage (🔩 installed / 📍 on site) and
+ * nothing else, so Detailed covers the same portfolio the mosaic does.
+ *
+ * — **Items** and **Waiting** apply to both scopes: a crate that has sat received for six
+ *   weeks is just as stale when we are the ones who will install it.
+ * — The closing count column is gone: it printed the same number as the bar's solid
+ *   segment, the % beside it and the project header — pure redundancy.
+ * — **🏭 / 📍** are what is left of *pending*, by where it sits. For a supply-only row 📍
+ *   is structurally empty (arriving on site IS closing out), so it prints a dash rather
+ *   than a zero that would read like a shortfall. */
+function StageTable({ blocks, empty, collapsed, onToggle, onJumpProject, onJumpItem, onDrill }: {
   blocks: ProjBlock[];
   empty: string;
-  supplyOnly: boolean;
   collapsed: Record<string, boolean>;
   onToggle: (projectId: string) => void;
   onJumpProject: (projectId: string) => void;
   onJumpItem: (projectId: string, itemId: string) => void;
+  /** Open the per-item aging list for one package. */
+  onDrill: (g: StageGroup) => void;
 }) {
-  const cols = supplyOnly ? 6 : 7;
-  const closedIcon = supplyOnly ? '📍' : '🔩';
-  const closedInk = supplyOnly ? 'var(--status-on-site-ink)' : 'var(--status-installed-ink)';
+  const cols = 8;
   return (
     <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--canvas)' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--surface-soft)' }}>
             <th style={thL}>Work package</th>
-            <th style={th} title="In warehouse">🏭</th>
-            <th style={th} title={supplyOnly ? 'On site — delivered, lifecycle closed' : 'On site'}>📍</th>
-            {!supplyOnly && <th style={th} title="Installed">🔩</th>}
+            <th style={th} title="Items in hand — click a count for the per-item list">Items</th>
+            <th style={th} title="In the warehouse, not closed out yet">🏭</th>
+            <th style={th} title="On site, not installed yet — empty where the package closes on site">📍</th>
             <th style={thL}>On-Site Req.</th>
-            <th style={{ ...thL, width: 132 }}>{supplyOnly ? 'On site' : 'Installed'}</th>
+            <th style={th} title="Longest wait since the material was received">Waiting</th>
+            <th style={{ ...thL, width: 132 }}>Closed out</th>
             <th style={{ ...th, width: 30 }} />
           </tr>
         </thead>
@@ -162,7 +331,7 @@ function StageTable({ blocks, empty, supplyOnly, collapsed, onToggle, onJumpProj
                     <span style={{ color: 'var(--muted)' }}>{collapsed[proj.projectId] ? '▸' : '▾'}</span>
                     <span>{proj.projectName}</span>
                     <span style={{ color: 'var(--muted)', fontWeight: 500 }}>
-                      {proj.packages.length} pkg · {proj.awaiting} awaiting · {proj.closed} {supplyOnly ? 'on site' : 'installed'}
+                      {proj.packages.length} pkg · {proj.awaiting} awaiting · {proj.closed} closed out
                     </span>
                     <span style={{ flex: 1 }} />
                     <button
@@ -193,24 +362,53 @@ function StageTable({ blocks, empty, supplyOnly, collapsed, onToggle, onJumpProj
                     onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                   >
-                    <td style={{ ...tdL, color: 'var(--muted)' }}>{g.wpLabel}</td>
+                    <td style={{ ...tdL, color: 'var(--muted)' }}>
+                      {g.wpLabel}
+                      {/* Named in words, not with the 📍 glyph: that icon is a column header
+                          two cells to the right meaning something else (on site, still
+                          open), and the same symbol saying two things in one row is worse
+                          than four extra characters. */}
+                      {g.supplyOnly && (
+                        <span
+                          title="Supply only — this package closes when the material reaches the jobsite"
+                          style={{ marginLeft: 6, font: 'var(--text-caption)', color: 'var(--status-on-site-ink)', background: 'var(--status-on-site)', borderRadius: 'var(--radius-sm)', padding: '1px 5px', whiteSpace: 'nowrap' }}
+                        >
+                          supply only
+                        </span>
+                      )}
+                    </td>
+                    <td style={td}>
+                      {/* Ghost, not a link colour: `--link` is not re-declared for dark
+                          mode and lands at 2.7:1 on the dark canvas. The resting outline
+                          of `.btn--ghost` is built on currentColor, so `--ink` gives the
+                          same affordance and stays legible on both themes. */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title={`${g.items} item${g.items === 1 ? '' : 's'} in hand — see how long each has been waiting`}
+                        onClick={(e) => { e.stopPropagation(); onDrill(g); }}
+                        style={{ padding: '2px 9px', font: 'var(--text-mono)', fontWeight: 700 }}
+                      >
+                        {g.items}
+                      </Button>
+                    </td>
                     <td style={{ ...td, fontWeight: g.warehouse ? 600 : 400, color: g.warehouse ? 'var(--ink)' : 'var(--muted)' }}>{g.warehouse}</td>
-                    <td style={{ ...td, color: g.site ? (supplyOnly ? closedInk : 'var(--ink)') : 'var(--muted)', fontWeight: supplyOnly && g.site ? 600 : 400 }}>{g.site}</td>
-                    {!supplyOnly && (
-                      <td style={{ ...td, color: g.closed ? closedInk : 'var(--muted)', fontWeight: g.closed ? 600 : 400 }}>{g.closed}</td>
-                    )}
+                    <td style={{ ...td, color: !g.supplyOnly && g.site ? 'var(--ink)' : 'var(--muted)' }}>
+                      {g.supplyOnly ? '—' : g.site}
+                    </td>
                     <td style={{ ...td, textAlign: 'left', font: 'var(--text-mono)', fontWeight: 600, background: tone?.bg, color: tone?.ink ?? 'var(--ink)', whiteSpace: 'nowrap' }}>
                       {g.awaiting === 0 ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>— done</span>
                         : g.nextOnsite ? `${g.urgency === 'overdue' ? '⚠ ' : ''}${fmtMDY(g.nextOnsite)}`
                           : '❔ no date'}
                     </td>
+                    <WaitCell days={g.awaiting === 0 ? null : g.waited} />
                     <td style={tdL}>
                       <InstallBar
                         closed={g.closed}
                         awaiting={g.awaiting}
                         total={g.items}
-                        tone={supplyOnly ? 'site' : 'install'}
-                        title={`${g.closed} ${closedIcon} ${supplyOnly ? 'on site' : 'installed'} · ${g.awaiting} awaiting · ${g.items} in hand`}
+                        tone={g.supplyOnly ? 'site' : 'install'}
+                        title={`${g.closed} ${g.supplyOnly ? '📍 on site' : '🔩 installed'} · ${g.awaiting} awaiting · ${g.items} in hand`}
                       />
                     </td>
                     <td style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>›</td>
@@ -569,16 +767,23 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfir
 export function OverviewScreen() {
   const { db, nav, actions, setActiveProjectId, thresholdsFor, jumpToItem } = useApp();
   const [groupMode, setGroupMode] = useState<'wp' | 'project'>('wp');
-  // Installation table: pending-only by default (the actionable list); toggle to see
-  // every package that has material in hand, including the ones fully installed.
-  const [installPending, setInstallPending] = useState(true);
-  // Collapsed project groups in the Installation table (default: expanded).
-  const [installCollapsed, setInstallCollapsed] = useState<Record<string, boolean>>({});
-  const toggleInstall = (id: string) => setInstallCollapsed((c) => ({ ...c, [id]: !c[id] }));
-  // Same pair of controls for the Supply Only table (packages that close on site).
-  const [supplyPending, setSupplyPending] = useState(true);
-  const [supplyCollapsed, setSupplyCollapsed] = useState<Record<string, boolean>>({});
-  const toggleSupply = (id: string) => setSupplyCollapsed((c) => ({ ...c, [id]: !c[id] }));
+  // Installation status: the mosaic of project cards, or the package table it grew out
+  // of. Two views of one dataset, so it's a view switch and not a filter — the mosaic
+  // answers "which project is behind", the table "what exactly is where".
+  const [installView, setInstallView] = useState<'mosaic' | 'table'>('mosaic');
+  // Detailed table: pending-only by default (the actionable list); toggle to see every
+  // package that has material in hand, including the ones already closed out.
+  const [stagePending, setStagePending] = useState(true);
+  // Collapsed project groups in the Detailed table (default: expanded).
+  const [stageCollapsed, setStageCollapsed] = useState<Record<string, boolean>>({});
+  const toggleStage = (id: string) => setStageCollapsed((c) => ({ ...c, [id]: !c[id] }));
+  // Which project + badge has its item list open, if any. Holds the coordinates and not
+  // the card, for the same reason `drillKey` does: the cards are rebuilt every render.
+  const [badgeDrill, setBadgeDrill] = useState<{ projectId: string; key: MosaicBadgeKey } | null>(null);
+  // The package whose per-item aging list is open, if any. Holds the KEY and not the
+  // group: the groups are rebuilt on every render, so a captured object would go stale
+  // the moment anything in the portfolio changes underneath the modal.
+  const [drillKey, setDrillKey] = useState<string | null>(null);
   // ⏰ Late deliveries — the row whose promised date is being edited inline, if any.
   const [reschedule, setReschedule] = useState<{ id: string; date: string } | null>(null);
   // ⏰ Late deliveries grouping — its OWN state, not shared with Buy-By: the two tables sit
@@ -893,9 +1098,9 @@ export function OverviewScreen() {
   })();
 
   // Stage status by work package — every package that already has material in hand.
-  // Which TABLE a package shows up in is decided by the PACKAGE, not the project: a
-  // supply-only package goes to "Supply Only status" even inside a supply-and-install
-  // project, and vice versa. (The project's flag only drives the Portfolio grouping.)
+  // Scope is read off the PACKAGE, not the project: a supply-only package closes at 📍
+  // even inside a supply-and-install project, and vice versa. (The project's flag only
+  // drives the Portfolio grouping and the mosaic card's badge family.)
   const stageGroups: StageGroup[] = (() => {
     const m = new Map<string, Enriched[]>();
     enriched.forEach((x) => {
@@ -925,6 +1130,7 @@ export function OverviewScreen() {
         urgency: worst,
         itemId: (dated[0] ?? pend[0] ?? xs[0]).i.id,
         waited: waits.length ? Math.max(...waits) : null,
+        rows: [...xs].sort((a, b) => (openWait(b) ?? -1) - (openWait(a) ?? -1)),
         supplyOnly,
       };
     }).sort((a, b) =>
@@ -932,12 +1138,26 @@ export function OverviewScreen() {
       || (a.nextOnsite || '9999').localeCompare(b.nextOnsite || '9999')
       || a.projectName.localeCompare(b.projectName));
   })();
-  const installRows = (installPending ? stageGroups.filter((g) => g.awaiting > 0) : stageGroups).filter((g) => !g.supplyOnly);
-  const supplyRows = (supplyPending ? stageGroups.filter((g) => g.awaiting > 0) : stageGroups).filter((g) => g.supplyOnly);
-  const installByProject = groupByProject(installRows);
-  const supplyByProject = groupByProject(supplyRows);
-  const allInstallCollapsed = installByProject.length > 0 && installByProject.every((p) => installCollapsed[p.projectId]);
-  const allSupplyCollapsed = supplyByProject.length > 0 && supplyByProject.every((p) => supplyCollapsed[p.projectId]);
+  // One table for the whole portfolio: the mosaic covers both scopes, so the Detailed
+  // view behind it has to as well, or half the cards would have no table to fall back to.
+  // Scope is a per-ROW property here — it decides the closing stage, not which table
+  // you are looking at.
+  const stageRows = stagePending ? stageGroups.filter((g) => g.awaiting > 0) : stageGroups;
+  const stageByProject = groupByProject(stageRows);
+  const allStageCollapsed = stageByProject.length > 0 && stageByProject.every((p) => stageCollapsed[p.projectId]);
+  // Re-read from the live groups, so the modal follows the data instead of a snapshot of
+  // it. A package that empties out (last item closed out elsewhere) closes the modal.
+  const drillGroup = drillKey ? stageGroups.find((g) => g.key === drillKey) ?? null : null;
+
+  // ---- The mosaic: Delivery and installation status ----
+  // The WHOLE portfolio, both scopes: a supply-only project asks the same question with a
+  // different finish line, so it gets a card like everyone else and `mosaicCards` reads
+  // each package's own closing stage. That is also why the section is not called
+  // Installation status any more. Everything else is decided inside the function, which is
+  // pure so the sorting and the 0/100% edges stay testable; here we only feed it.
+  const mosaicPackages = db.packages.filter((p) => activeIds.has(p.projectId));
+  const mosaic = mosaicCards(activeProjects, mosaicPackages, db.items);
+  const drillCard = badgeDrill ? mosaic.find((c) => c.projectId === badgeDrill.projectId) ?? null : null;
 
   // Portfolio count columns: tighter side padding so the Complete bar (which has to fit
   // its numbers inside) keeps a usable width at half-screen.
@@ -1384,79 +1604,69 @@ export function OverviewScreen() {
       <div style={{ flex: '1 1 460px', minWidth: 340, display: 'flex', flexDirection: 'column', gap: 24 }}>
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-          <div style={sectionTitle}>🏗 Installation status</div>
+          <div style={sectionTitle}>🏗 Delivery and installation status</div>
           <span style={{ flex: 1 }} />
-          <Button size="sm" variant={installPending ? 'primary' : 'secondary'} onClick={() => setInstallPending(true)} style={{ padding: '5px 10px' }}>Pending install</Button>
-          <Button size="sm" variant={!installPending ? 'primary' : 'secondary'} onClick={() => setInstallPending(false)} style={{ padding: '5px 10px' }}>All packages</Button>
+          {/* Pending / All narrows the TABLE's rows — it says nothing about a mosaic that
+              charts the whole scope by design, so it only appears with the table. */}
+          {installView === 'table' && (
+            <>
+              <Button size="sm" variant={stagePending ? 'primary' : 'secondary'} onClick={() => setStagePending(true)} style={{ padding: '5px 10px' }}>Still open</Button>
+              <Button size="sm" variant={!stagePending ? 'primary' : 'secondary'} onClick={() => setStagePending(false)} style={{ padding: '5px 10px' }}>All packages</Button>
+            </>
+          )}
+          <Button size="sm" variant={installView === 'mosaic' ? 'primary' : 'secondary'} onClick={() => setInstallView('mosaic')} style={{ padding: '5px 10px' }}>▦ Mosaic</Button>
+          <Button size="sm" variant={installView === 'table' ? 'primary' : 'secondary'} onClick={() => setInstallView('table')} style={{ padding: '5px 10px' }}>▤ Detailed</Button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
           <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', flex: 1 }}>
-            Material already in hand, by project › work package. Click a project to collapse it.
+            {installView === 'mosaic'
+              ? 'Every project, one bar per package — solid is closed out: 🔩 installed, or 📍 on site where we only supply. Click a bar to open the package, a badge for its list.'
+              : 'Material already in hand, by project › work package — both scopes, each package measured against its own finish line. Waiting counts days since it was received; click an item count for the per-item list.'}
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={installByProject.length === 0}
-            onClick={() => {
-              const target = !allInstallCollapsed;
-              setInstallCollapsed(Object.fromEntries(installByProject.map((p) => [p.projectId, target])));
-            }}
-            style={{ padding: '4px 8px', color: 'var(--muted)', whiteSpace: 'nowrap' }}
-          >
-            {allInstallCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
-          </Button>
-        </div>
-        <StageTable
-          blocks={installByProject}
-          supplyOnly={false}
-          collapsed={installCollapsed}
-          onToggle={toggleInstall}
-          onJumpProject={jumpProject}
-          onJumpItem={jumpToItem}
-          empty={installPending ? 'Nothing waiting to be installed — every received item is closed out.' : 'No material received yet.'}
-        />
-      </div>
-
-      {/* Supply Only status — same shape, measured against 📍 on site. Only shows up once
-          something in the portfolio is actually marked supply only. */}
-      {hasSupplyOnly && (
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-            <div style={sectionTitle}>📍 Supply Only status</div>
-            <span style={{ flex: 1 }} />
-            <Button size="sm" variant={supplyPending ? 'primary' : 'secondary'} onClick={() => setSupplyPending(true)} style={{ padding: '5px 10px' }}>Pending delivery</Button>
-            <Button size="sm" variant={!supplyPending ? 'primary' : 'secondary'} onClick={() => setSupplyPending(false)} style={{ padding: '5px 10px' }}>All packages</Button>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', flex: 1 }}>
-              Packages we supply but don't install — they close when the material reaches the jobsite.
-            </div>
+          {installView === 'table' && (
             <Button
               variant="ghost"
               size="sm"
-              disabled={supplyByProject.length === 0}
+              disabled={stageByProject.length === 0}
               onClick={() => {
-                const target = !allSupplyCollapsed;
-                setSupplyCollapsed(Object.fromEntries(supplyByProject.map((p) => [p.projectId, target])));
+                const target = !allStageCollapsed;
+                setStageCollapsed(Object.fromEntries(stageByProject.map((p) => [p.projectId, target])));
               }}
               style={{ padding: '4px 8px', color: 'var(--muted)', whiteSpace: 'nowrap' }}
             >
-              {allSupplyCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
+              {allStageCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
             </Button>
-          </div>
-          <StageTable
-            blocks={supplyByProject}
-            supplyOnly
-            collapsed={supplyCollapsed}
-            onToggle={toggleSupply}
+          )}
+        </div>
+        {installView === 'mosaic' ? (
+          <InstallMosaic
+            cards={mosaic}
+            empty="No work packages with items yet — the mosaic fills in as material is added and published."
             onJumpProject={jumpProject}
             onJumpItem={jumpToItem}
-            empty={supplyPending ? 'Nothing waiting for the jobsite — every received item is on site.' : 'No material received yet.'}
+            onBadgeDrill={(projectId, key) => setBadgeDrill({ projectId, key })}
           />
-        </div>
+        ) : (
+          <StageTable
+            blocks={stageByProject}
+            collapsed={stageCollapsed}
+            onToggle={toggleStage}
+            onJumpProject={jumpProject}
+            onJumpItem={jumpToItem}
+            onDrill={(g) => setDrillKey(g.key)}
+            empty={stagePending ? 'Nothing open — every received item reached its finish line.' : 'No material received yet.'}
+          />
+        )}
+      </div>
+      </div>
+      </div>
+
+      {drillGroup && (
+        <PackageDrillModal group={drillGroup} onClose={() => setDrillKey(null)} onJumpItem={jumpToItem} />
       )}
-      </div>
-      </div>
+      {drillCard && badgeDrill && (
+        <BadgeDrillModal card={drillCard} badge={badgeDrill.key} onClose={() => setBadgeDrill(null)} onJumpItem={jumpToItem} />
+      )}
     </div>
   );
 }

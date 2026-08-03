@@ -307,6 +307,101 @@
   outline-offset: -2px;
 }
 
+/* ============================ installation progress mosaic (Overview) */
+/* The three clickable surfaces of a card. All declare their background HERE and not
+ * inline: hover has to be able to change it, and an inline style always beats the
+ * stylesheet. */
+.mos-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--canvas);
+  overflow: hidden;
+}
+/* The card header: project name on the left, closing icon + rollup on the right. */
+.mos-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-soft);
+  cursor: pointer;
+  text-align: left;
+  transition: background 110ms ease;
+}
+.mos-head:hover {
+  background: var(--surface-strong);
+}
+.mos-head:focus-visible,
+.mos-row:focus-visible,
+.mos-badge:focus-visible:not(:disabled) {
+  outline: 2px solid var(--info-border);
+  outline-offset: -2px;
+}
+/* One row = one package: label on top, bar below. Flat at rest, chip on hover. */
+.mos-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 5px 6px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  transition: background 110ms ease, border-color 110ms ease;
+}
+.mos-row:hover {
+  background: var(--surface-soft);
+  border-color: var(--hairline);
+}
+/* Package name + its flag. The name truncates with ellipsis and the row's `title`
+ * carries the full text; the flag never truncates (it's one word and it's the warning). */
+.mos-row-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font: var(--text-caption);
+  color: var(--muted);
+}
+.mos-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The three footer badges. At zero items it goes dim and opens nothing — an empty
+ * drill-down is a modal that opens to say there's nothing in it. */
+.mos-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 110ms ease, border-color 110ms ease;
+}
+.mos-badge:hover:not(:disabled) {
+  background: var(--surface-soft);
+  border-color: var(--hairline);
+}
+.mos-badge:disabled {
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: default;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .btn,
   .icon-btn,
