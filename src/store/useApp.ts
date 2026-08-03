@@ -16,6 +16,9 @@ export interface Actions {
   deleteItems: (ids: string[]) => void;
   addItem: (wpId: string) => void;
   savePackageToReport: (wpId: string) => void;
+  /** Same publish as `savePackageToReport`, for an explicit subset of packages — a single
+   * captureUndo + a single setDb, so one Undo reverts every package in the list together. */
+  savePackagesToReport: (wpIds: string[]) => void;
   saveAllToReport: (projectId: string) => void;
   undoPackage: (wpId: string) => void;
   undoLastSave: () => void;

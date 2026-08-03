@@ -154,6 +154,22 @@
    * sobre canvas o superficie neutra → estos dos. */
   --alert-ink: #8f1d1d;
   --warn-ink: #8a5210;
+
+  /* Rojo pastel de alarma SOBRE UN PANEL OSCURO FIJO (lote 72) — la tercera superficie,
+   * y la razón por la que no le sirve ninguno de los dos de arriba.
+   *
+   * Los paneles flotantes del timeline (el tooltip del hito y su picker de paquete) van
+   * sobre `--brand-dark`, que a diferencia de `--canvas` **no se redeclara en oscuro**:
+   * es el mismo #312051 en los dos temas. Así que la alarma que va encima tampoco puede
+   * redeclararse — un token con valor de dark se despegaría de un fondo que nunca se
+   * mueve, que es justo el bug al revés del que motivó `--alert-ink`. Por eso ESTE token
+   * es theme-flat A PROPÓSITO y no lleva override en el bloque dark de abajo.
+   *
+   * El valor no es nuevo: es el que el tooltip ya venía hardcodeando a mano para sus dos
+   * líneas de alarma (⏰ vencido, ⚠ ORDER NOW). Mide 7.1:1 sobre #312051.
+   * REGLA, completando la de arriba: alarma sobre pastel del semáforo → tinta del
+   * semáforo · sobre canvas → --alert-ink · sobre panel oscuro fijo → este. */
+  --alert-on-dark: #ff9b9b;
 }
 
 /* ======================================================================

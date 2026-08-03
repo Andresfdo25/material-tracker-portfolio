@@ -43,6 +43,15 @@ export function fmtMDY(iso: string): string {
   return `${m}/${d}/${y}`;
 }
 
+/** MM/DD with the year dropped — for a column that repeats a date many times under a
+ * heading that already states the year (the timeline's collapsed tooltip). Never use it
+ * where the date stands alone: a bare 01/05 in December is genuinely ambiguous. */
+export function fmtMD(iso: string): string {
+  const [y, m, d] = String(iso ?? '').split('-');
+  if (!y || !m || !d) return iso ?? '';
+  return `${m}/${d}`;
+}
+
 /** Compact MMDDYYYY stamp — the exported PDF's default filename ("…- 07222026"). */
 export function fmtFileStamp(iso: string): string {
   const [y, m, d] = String(iso ?? '').split('-');
@@ -539,6 +548,81 @@ export function isClosed(it: StageR, supplyOnly = false): boolean {
  * ours. Kept named `awaitingInstall` for its callers; `supplyOnly` narrows it. */
 export function awaitingInstall(it: StageR, supplyOnly = false): boolean {
   return it.delivered && !isClosed(it, supplyOnly);
+}
+
+/** How far the WHOLE package has got: the furthest stage that EVERY one of its items has
+ * reached. The timeline's collapsed milestone needs this because its dot speaks for
+ * several packages at once, and the only thing the dot itself can say is its ring — "all
+ * closed" or "not all closed". Everything between *we bought it* and *it is on the floor*
+ * read identically there.
+ *
+ * It is a MIN, not a count: the package is 'on-site' only when nothing in it is still in
+ * the warehouse. Part-way is deliberately NOT a tier — the drill-downs exist for that, and
+ * a "mixed" mark on a dot that already carries a ring, a size and a colour is exactly the
+ * saturation this ladder is meant to avoid.
+ *
+ * Two conventions it inherits rather than re-decides:
+ *  · **Bought = a non-empty PO#**, so OFCI counts as bought — `mosaicCards` says it best:
+ *    it is nobody's left to buy. An OFCI item never gets `delivered` either (`stagePatch`
+ *    refuses it), so a package holding one tops out at 'ordered' unless it is installed.
+ *    That is correct, not a gap: where owner-furnished material sits is not tracked here.
+ *  · **Supply-only closes on site**, so 'installed' is clamped away — installing is not
+ *    ours and 📍 IS the finish line (same rule as `isClosed` / `closingStage`). */
+export type PkgReadiness = 'none' | 'ordered' | 'warehouse' | 'on-site' | 'installed';
+const READINESS_LADDER: PkgReadiness[] = ['none', 'ordered', 'warehouse', 'on-site', 'installed'];
+export function packageReadiness(items: (StageR & Pick<ReportSnapshot, 'po'>)[], supplyOnly = false): PkgReadiness {
+  if (!items.length) return 'none';
+  let rank = 4;
+  items.forEach((it) => {
+    const stage = itemStage(it);
+    const r = stage === 'installed' ? 4
+      : stage === 'on-site' ? 3
+        : stage === 'warehouse' ? 2
+          : String(it.po ?? '').trim() ? 1 : 0;
+    if (r < rank) rank = r;
+  });
+  if (supplyOnly && rank === 4) rank = 3;
+  return READINESS_LADDER[rank];
+}
+
+/** Position on the ladder, so a caller can take the min of several packages' readiness
+ * without re-deriving the order (the timeline's collapsed dot does exactly that). */
+export function readinessRank(r: PkgReadiness): number {
+  return READINESS_LADDER.indexOf(r);
+}
+
+/** How a readiness tier introduces itself in the timeline tooltip: a ✓ in `token` plus
+ * `word`. Lives here rather than in the screen for the usual fast-refresh reason (a .tsx
+ * that exports anything but components loses it), beside `STAGE_META` and
+ * `MOSAIC_BADGE_META` for the same reason those do.
+ *
+ * Every `token` is theme-FLAT — a brand or status colour that is never redeclared in the
+ * dark block — because the tooltip's background (`--brand-dark`) is itself theme-flat. A
+ * token with a dark-mode value would drift away from a surface that never moves.
+ * `--alert-on-dark` exists precisely so the red rung can obey that rule too (`--alert-ink`
+ * could not: it flips between themes).
+ *
+ * The WORD rides beside the ✓ on purpose, and it is the anti-saturation decision: four
+ * greens nobody can distinguish are not four tiers, and colour alone would need four more
+ * entries on a legend that already carries several. */
+export interface ReadinessMark { glyph: string; word: string; token: string }
+export const READINESS_META: Record<PkgReadiness, ReadinessMark> = {
+  // 'none' is the one rung that is an ALARM rather than progress: the Req. date is coming
+  // (or gone) and not one item has a PO#. It earns the pastel red and a ·, not a ✓ —
+  // nothing has been cleared, so a check mark there would be a lie.
+  none: { glyph: '·', word: 'not ordered', token: '--alert-on-dark' },
+  ordered: { glyph: '✓', word: 'ordered', token: '--status-ordered' },
+  warehouse: { glyph: '✓', word: 'warehouse', token: '--brand-orange' },
+  'on-site': { glyph: '✓', word: 'on site', token: '--brand-teal' },
+  installed: { glyph: '✓', word: 'installed', token: '--success-border' },
+};
+/** `READINESS_META` with the one scope-dependent relabel applied: reaching the jobsite is
+ * the FINISH for a supply-only package, so there it earns the terminal green and says
+ * "delivered" instead of the mid-ladder "on site". Always returns a mark — "nothing
+ * ordered yet" is an answer the tooltip has to give, not an absence. */
+export function readinessMark(r: PkgReadiness, supplyOnly = false): ReadinessMark {
+  if (r === 'on-site' && supplyOnly) return { glyph: '✓', word: 'delivered', token: '--success-border' };
+  return READINESS_META[r];
 }
 
 /** What CLOSES an item currently awaiting site/install, decided against its live draft

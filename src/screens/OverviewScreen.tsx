@@ -1,9 +1,9 @@
 // OverviewScreen.tsx — portfolio pivot across projects (report snapshots): the status
 // matrix, a Req.-Date timeline (one lane per project), and the Buy-By table grouped
 // by project → work package with item counts. All read published report snapshots.
-import { Fragment, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useApp } from '../store/useApp';
-import { awaitingInstall, backorderQty, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMDY, groupByPackage, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, parseISO, pendingInstallQty, projectClosesAtSite, stageMoves, submittalBlockers, today, totalQty, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type StageMoves, type WaitSeverity } from '../store/logic';
+import { awaitingInstall, backorderQty, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMD, fmtMDY, groupByPackage, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, packageReadiness, parseISO, pendingInstallQty, projectClosesAtSite, readinessMark, readinessRank, stageMoves, submittalBlockers, today, totalQty, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type PkgReadiness, type StageMoves, type WaitSeverity } from '../store/logic';
 import type { ComputedItem, ItemStage, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
 import { StatusBadge } from '../components/ds/StatusBadge';
 import { Button } from '../components/ds/Button';
@@ -613,14 +613,30 @@ function StageTable({ blocks, empty, collapsed, onToggle, onJumpProject, onJumpI
 
 /* ------------------------------------------------------------------ Req. timeline */
 
+/** One package this milestone speaks for. A collapsed dot carries several. */
+interface MsPackage {
+  wpId: string; label: string; itemId: string;
+  date: string;              // its OWN Req. date — differs from the dot's when `spread`
+  readiness: PkgReadiness;   // how far all of its items have got (logic.ts)
+  supplyOnly: boolean;       // decides whether 📍 is the finish line for this one
+}
 interface Milestone {
   date: string;      // ISO — the WP's earliest On-Site Req. (or Field Measure) date
-  label: string;     // work-package label (or 'All Material Required')
-  kind: 'wp' | 'all' | 'fm'; // 'fm' = Field Measurements visit — orange ◆, one per package
+  label: string;     // work-package label, or the collective 'All Req.' / 'N of M Req.'
+  kind: 'wp' | 'all' | 'group' | 'fm'; // 'fm' = Field Measurements visit — orange ◆, one per package. 'group' = several packages render on this spot, but not literally every open package in the project (that's 'all')
   itemId: string;    // deep-link target (earliest item)
-  wpId?: string;     // package to reschedule on drag ('all' → whole project)
+  wpId?: string;     // package to reschedule on drag ('all'/'group' → several, see wpEntries)
   orderNow: boolean; // package has an item past its buy-by (ORDER NOW) → red ring
-  complete: boolean; // every item INSTALLED (not merely received) → green ring
+  complete: boolean; // every item reached its scope's closing stage → green ring
+  readiness: PkgReadiness; // the tier EVERY package on this dot has cleared (the min)
+  supplyOnly: boolean;     // false for a mixed group — see the comment where it's built
+  /** kind 'all' | 'group' — the packages this dot collapsed, for the tooltip and picker. */
+  wpEntries?: MsPackage[];
+  /** The collapsed packages do NOT share one date: they merely LAND on the same spot
+   * because `frac` clamps every overdue date onto the TODAY line. When this is set the
+   * tooltip has to print each package's own date, or the dot would claim a single Req.
+   * date that three of its four packages never had. */
+  spread?: boolean;
 }
 interface Lane {
   project: Project;
@@ -642,7 +658,7 @@ function TimelineLegend() {
   return (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', font: 'var(--text-caption)', color: 'var(--muted)' }}>
       <span style={item} title="One work package's On-Site Req. date"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-slate)' }} /> WP Req. date</span>
-      <span style={item} title="The project's collapsed milestone — all material required, or all delivered on a supply-only project"><span style={{ width: 17, height: 17, borderRadius: '50%', background: 'var(--brand-teal)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-slate)' }} /> All material</span>
+      <span style={item} title="Every open package in the project needs its material on the same date — the dot collapses them into one. Hover it for the list, click it to pick one. A partial group (some of the packages, not all) collapses the same way but keeps the normal dot size."><span style={{ width: 17, height: 17, borderRadius: '50%', background: 'var(--brand-teal)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-slate)' }} /> All packages, one date</span>
       <span style={item} title="Field measurements visit — one per package. It stays here, pinned to today once the date passes, until you confirm the measurements were taken (click the ◆, or set Field measurements to Approved in Breakdown Submittals)."><span style={{ width: 10, height: 10, borderRadius: 2, transform: 'rotate(45deg)', background: 'var(--brand-orange)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--brand-orange)' }} /> Field measure</span>
       <span style={item} title="The package's Req. date has passed, or it still has items past their buy-by date"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: `0 0 0 2px ${TL_RED}` }} /> Past due / ORDER NOW</span>
       <span style={item} title="Every item in the package is closed out"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--success-border)' }} /> Closed out</span>
@@ -651,17 +667,55 @@ function TimelineLegend() {
   );
 }
 
+/** The ✓ that says how far a package has actually got, for the timeline tooltip and its
+ * package picker. Colour AND word, never colour alone — see `READINESS_META`. `word` is
+ * dropped when the caller already prints the tier once for the whole dot. */
+function ReadinessTick({ readiness, supplyOnly, tick = true, word = true }: {
+  readiness: PkgReadiness; supplyOnly: boolean;
+  /** The two halves are separately switchable because both callers lay them out in a grid
+   * and need them in DIFFERENT columns — rendered as one unit they could never align. */
+  tick?: boolean; word?: boolean;
+}) {
+  const mark = readinessMark(readiness, supplyOnly);
+  const color = `var(${mark.token})`;
+  return (
+    <>
+      {tick && <span aria-hidden style={{ color, fontWeight: 700 }}>{mark.glyph}</span>}
+      {word && <span style={{ color }}>{mark.word}</span>}
+    </>
+  );
+}
+
 function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfirmFm }: {
   lanes: Lane[];
   onJumpItem: (projectId: string, itemId: string) => void;
   onJumpProject: (projectId: string) => void;
-  onSetDate: (projectId: string, wpId: string | undefined, iso: string, field: 'onsite' | 'fieldDate') => void;
+  onSetDate: (projectId: string, wpId: string | undefined, iso: string, field: 'onsite' | 'fieldDate', wpIds?: string[]) => void;
   /** Click on a ◆ — "we measured": marks the package's Field measurements Approved. */
   onConfirmFm: (wpId: string, wpLabel: string, date: string) => void;
 }) {
   const [hover, setHover] = useState<{ laneIdx: number; msIdx: number } | null>(null);
   const [drag, setDrag] = useState<{ laneIdx: number; msIdx: number; date: string } | null>(null);
   const dragRef = useRef<{ laneIdx: number; msIdx: number; rect: DOMRect; startX: number; moved: boolean } | null>(null);
+  // Which package did you mean? A collapsed "all" dot speaks for several packages, so its
+  // click can no longer just jump to the project (the lane label already does that) — it
+  // opens this picker instead. Not a portal: like the hover tooltip, it lives inside the
+  // lane row, which nothing here clips (see the comment on the grid layer above).
+  const [picker, setPicker] = useState<{ laneIdx: number; msIdx: number } | null>(null);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!picker) return;
+    const onDown = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPicker(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPicker(null); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [picker]);
 
   // Fixed 6-month window anchored to today — the axis scrolls forward a day at a time.
   // `bands` are the month SLICES (not just their labels): each one paints its own column
@@ -826,6 +880,11 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfir
                 )}
                 {lane.milestones.map((m, msIdx) => {
                   const big = m.kind === 'all';
+                  // 'all' and 'group' both speak for more than one package, so a click opens
+                  // the picker instead of jumping to one arbitrarily-chosen item. Only 'all'
+                  // gets the bigger teal dot — that visual is the legend's documented "All
+                  // material" mark, and a partial group isn't that.
+                  const pickable = m.kind === 'all' || m.kind === 'group';
                   const fm = m.kind === 'fm';
                   // A ◆ whose day came and went with nobody confirming it. It sits on the
                   // TODAY line (the clamp in `frac`) and pulses in its own orange, because
@@ -837,6 +896,12 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfir
                   const lifted = isHover || isDragging;
                   const posFrac = isDragging ? frac(drag.date) : frac(m.date);
                   const ring = ringOf(m);
+                  // The native title and the aria-label carry the same two facts the visual
+                  // tooltip does — which packages, and how far they have got — because a
+                  // screen reader never sees the hover panel at all.
+                  const pkgList = m.wpEntries ? ` (${m.wpEntries.map((e) => e.label).join(', ')})` : '';
+                  const readyWord = fm ? null : readinessMark(m.readiness, m.supplyOnly);
+                  const readyNote = readyWord ? ` · ${m.wpEntries ? 'all packages ' : ''}${readyWord.word}` : '';
                   return (
                     <button
                       key={msIdx}
@@ -844,8 +909,8 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfir
                       // The ORDER NOW ring breathes (tl-dot--alert): in a portfolio of
                       // eight lanes the static ring alone loses the race for attention.
                       className={`tl-dot${(m.orderNow || m.date < todayISO) ? ' tl-dot--alert' : ''}${fmOverdue ? ' tl-dot--fm-alert' : ''}`}
-                      title={`${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}${fmOverdue ? ' (passed — not confirmed)' : ''} · drag to reschedule${fm ? ' · click to confirm measured' : ''}`}
-                      aria-label={`${lane.project.name} — ${m.label} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}${fmOverdue ? ' — passed, not confirmed' : ''}`}
+                      title={`${m.label}${pkgList} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}${fmOverdue ? ' (passed — not confirmed)' : ''}${readyNote} · drag to reschedule${fm ? ' · click to confirm measured' : pickable ? ' · click to pick a package' : ''}`}
+                      aria-label={`${lane.project.name} — ${m.label}${pkgList} — ${fm ? 'Field measure' : 'Req.'} ${fmtMDY(m.date)}${fmOverdue ? ' — passed, not confirmed' : ''}${readyNote}`}
                       onMouseEnter={() => setHover({ laneIdx, msIdx })}
                       onMouseLeave={() => setHover(null)}
                       onPointerDown={(e) => {
@@ -867,11 +932,26 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfir
                         if (!di) return;
                         if (di.moved) {
                           const iso = dateAtX(e.clientX, di.rect);
-                          const scope = m.kind === 'all' ? `all packages in ${lane.project.name}` : m.label;
+                          // Name the packages instead of saying "all packages in <project>",
+                          // which was never quite true and is now plainly wrong: a package
+                          // that is already closed out drops off the lane, so an 'all' dot
+                          // means every OPEN package, not every package. Listing them is also
+                          // what makes a spread group's confirm honest — it is about to
+                          // collapse several different dates onto one.
+                          const scope = m.wpEntries?.map((x) => x.label).join(', ') ?? m.label;
                           const msg = `Move the ${m.kind === 'fm' ? 'Field Measurements' : 'On-Site Req.'} date for ${scope} to ${fmtMDY(iso)}?`
-                            + `\n\nThis publishes ${m.kind === 'all' ? 'those packages' : 'that package'} to the report — any other pending edits in it go too. Undo is available right after.`;
-                          if (window.confirm(msg)) onSetDate(lane.project.id, m.wpId, iso, m.kind === 'fm' ? 'fieldDate' : 'onsite');
-                        } else if (big) onJumpProject(lane.project.id);
+                            + (m.spread ? `\n\nThese are on ${m.wpEntries!.length} different dates today — this puts them all on ${fmtMDY(iso)}.` : '')
+                            + `\n\nThis publishes ${pickable ? 'those packages' : 'that package'} to the report — any other pending edits in it go too. Undo is available right after.`;
+                          if (window.confirm(msg)) {
+                            // Always the dot's OWN packages, never "the whole project": the
+                            // dot speaks for the open ones and those are the only ones the
+                            // user can see it standing for.
+                            onSetDate(lane.project.id, m.wpId, iso, m.kind === 'fm' ? 'fieldDate' : 'onsite', m.wpEntries?.map((x) => x.wpId));
+                          }
+                        // The collapsed/grouped dot speaks for several packages — jumping
+                        // straight to the project (or to one of them, arbitrarily) isn't
+                        // useful, so the click opens a picker instead.
+                        } else if (pickable) setPicker((p) => (p?.laneIdx === laneIdx && p?.msIdx === msIdx ? null : { laneIdx, msIdx }));
                         // A ◆ that only leaves when the visit is confirmed has to offer the
                         // confirmation where it sits, so on this one dot the click means
                         // "we measured" instead of "open the item" — the item is still one
@@ -896,33 +976,175 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfir
                     />
                   );
                 })}
-                {hover?.laneIdx === laneIdx && !drag && (() => {
+                {hover?.laneIdx === laneIdx && !drag
+                  && !(picker?.laneIdx === laneIdx && picker?.msIdx === hover.msIdx) && (() => {
                   const m = lane.milestones[hover.msIdx];
                   const f = frac(m.date);
                   // Anchor flip: centred in the middle of the window, but pinned near its
                   // own edge at the extremes so a tooltip at Jan or at the far month
                   // doesn't hang outside the card. The caret follows the same anchor.
                   const anchor = f > 0.78 ? 88 : f < 0.22 ? 12 : 50;
+                  // `wpEntries` arrives date-ascending (it is built off the date-sorted
+                  // `visible`), so first and last bound the range a spread group covers.
+                  const entries = m.wpEntries ?? [];
+                  const mult = entries.length > 1;
+                  // A hover tooltip that outgrows the card it hangs off is worse than one
+                  // that admits it is showing six of nine — and the picker behind the click
+                  // has all of them, which is what the "+N more" line points at.
+                  const shown = entries.slice(0, 6);
+                  const hiddenCount = entries.length - shown.length;
+                  // All on the same tier → one collective ✓. Different tiers → per package.
+                  const tiersDiffer = mult && entries.some((e) => e.readiness !== entries[0].readiness);
+                  const datePart = m.spread
+                    ? `${fmtMDY(entries[0].date)} → ${fmtMDY(entries[entries.length - 1].date)}`
+                    : fmtMDY(m.date);
+                  const dateHeadline = `${m.kind === 'fm' ? 'Measure' : 'Req.'} ${datePart}`;
                   return (
                     <div data-timeline-tooltip style={{
                       position: 'absolute', left: leftOf(f), bottom: 'calc(50% + 16px)', transform: `translateX(-${anchor}%)`,
                       zIndex: 10, background: 'var(--brand-dark)', color: '#fff', borderRadius: 'var(--radius-sm)',
-                      padding: '8px 11px', font: 'var(--text-caption)', maxWidth: 280, boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
+                      // A collapsed dot needs the extra room, and 364 is measured, not
+                      // guessed: at 280 the four columns squeeze the longest package name
+                      // down to a stub. Longer names ellipsize with the full text in the
+                      // cell's title, and the picker behind the click has more room again.
+                      padding: '8px 11px', font: 'var(--text-caption)', maxWidth: mult ? 364 : 280, boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
                     }}>
                       <div style={{ fontWeight: 700 }}>{lane.project.name}</div>
-                      {/* The collapsed milestone carries its own label — "All Delivered" for
-                          a supply-only project, "All Material Required" otherwise. */}
-                      <div style={{ color: m.kind === 'fm' ? 'var(--brand-orange)' : 'var(--brand-teal)' }}>{m.kind === 'all' ? `✅ ${m.label}` : m.kind === 'fm' ? `◆ Field measurements — ${m.label}` : m.label}</div>
-                      <div style={{ color: 'rgba(255,255,255,0.8)', font: 'var(--text-mono-sm)', whiteSpace: 'nowrap' }}>{m.kind === 'fm' ? 'Measure' : 'Req.'} {fmtMDY(m.date)}</div>
+                      {/* HEADLINE: the collective label as a highlighted chip, with the Req.
+                          date on the SAME line — what matters first is seeing WHEN the
+                          material is required on site, so the date sits at the top instead
+                          of under a list. Both scopes say the neutral "Req." now; what the
+                          material has actually DONE is the ✓ below, which is derived and
+                          cannot contradict itself. */}
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap', margin: '2px 0 1px' }}>
+                        {m.kind === 'fm' ? (
+                          <span style={{ color: 'var(--brand-orange)' }}>◆ Field measurements — {m.label}</span>
+                        ) : mult ? (
+                          <span style={{
+                            background: 'var(--brand-teal)', color: 'var(--brand-dark)', fontWeight: 700,
+                            padding: '1px 7px', borderRadius: 'var(--radius-pill)', whiteSpace: 'nowrap',
+                          }}>
+                            {m.label}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--brand-teal)' }}>{m.label}</span>
+                        )}
+                        <span style={{ color: 'rgba(255,255,255,0.85)', font: 'var(--text-mono-sm)', whiteSpace: 'nowrap' }}>
+                          {dateHeadline}
+                        </span>
+                      </div>
+                      {/* The collective ✓ — printed ONLY when every package on the dot sits on
+                          the same tier, because then the per-package words below would be the
+                          same word repeated. When they differ this line is dropped and each
+                          package carries its own. */}
+                      {m.kind !== 'fm' && !tiersDiffer && (
+                        <div style={{ display: 'flex', gap: 5, font: 'var(--text-mono-sm)' }}>
+                          <ReadinessTick readiness={m.readiness} supplyOnly={m.supplyOnly} />
+                          {mult && <span style={{ color: 'rgba(255,255,255,0.5)' }}>— all {entries.length} packages</span>}
+                        </div>
+                      )}
+                      {/* One row per package. A grid so the ✓, the names, the tier words and
+                          the dates each line up in their own column instead of ragging. The
+                          name column is minmax(0,1fr) + ellipsis so a long label can't push
+                          the date out of the tooltip. */}
+                      {shown.length > 0 && (
+                        <div style={{
+                          display: 'grid', gridTemplateColumns: `${tiersDiffer ? 'auto ' : ''}minmax(0, 1fr)${tiersDiffer ? ' auto' : ''}${m.spread ? ' auto' : ''}`,
+                          columnGap: 6, rowGap: 1, margin: '2px 0 1px', font: 'var(--text-mono-sm)',
+                        }}>
+                          {shown.map((e) => (
+                            <Fragment key={e.wpId}>
+                              {/* No bullet column when the tiers agree — the collective mark
+                                  above already spoke, and a decorative · here would sit on
+                                  the same panel as the red · that MEANS "not ordered". */}
+                              {tiersDiffer && <ReadinessTick readiness={e.readiness} supplyOnly={e.supplyOnly} word={false} />}
+                              <span title={e.label} style={{ color: 'rgba(255,255,255,0.85)', paddingLeft: tiersDiffer ? 0 : 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.label}</span>
+                              {tiersDiffer && (
+                                <span style={{ whiteSpace: 'nowrap' }}>
+                                  <ReadinessTick readiness={e.readiness} supplyOnly={e.supplyOnly} tick={false} />
+                                </span>
+                              )}
+                              {/* Each package's OWN date, only when the dot collapsed several
+                                  different ones (all overdue, all clamped onto TODAY). With one
+                                  shared date this column would repeat the headline N times. */}
+                              {m.spread && <span style={{ color: 'rgba(255,255,255,0.6)', whiteSpace: 'nowrap' }}>{fmtMD(e.date)}</span>}
+                            </Fragment>
+                          ))}
+                        </div>
+                      )}
+                      {/* Bounded, and it SAYS it is bounded — a silent truncation would read
+                          as "these are all of them". */}
+                      {hiddenCount > 0 && (
+                        <div style={{ color: 'rgba(255,255,255,0.55)', font: 'var(--text-mono-sm)' }}>+{hiddenCount} more — click to see all</div>
+                      )}
                       {m.date < todayISO && (
-                        <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>
+                        <div style={{ color: 'var(--alert-on-dark)', font: 'var(--text-mono-sm)' }}>
                           {m.kind === 'fm' ? '⏰ Visit date passed — pinned until confirmed' : '⏰ Req. date passed — pinned to today'}
                         </div>
                       )}
-                      {m.orderNow && <div style={{ color: '#ff9b9b', font: 'var(--text-mono-sm)' }}>⚠ has ORDER NOW items</div>}
-                      {!m.orderNow && m.complete && <div style={{ color: 'var(--brand-teal)', font: 'var(--text-mono-sm)' }}>✓ all items closed out</div>}
+                      {m.orderNow && <div style={{ color: 'var(--alert-on-dark)', font: 'var(--text-mono-sm)' }}>⚠ has ORDER NOW items</div>}
                       <div style={{ color: 'rgba(255,255,255,0.55)', font: 'var(--text-mono-sm)', marginTop: 3 }}>
-                        ↔ drag to reschedule · {m.kind === 'fm' ? 'click: measurements taken ✓' : 'click to open'}
+                        ↔ drag to reschedule · {m.kind === 'fm' ? 'click: measurements taken ✓' : (m.kind === 'all' || m.kind === 'group') ? 'click to pick a package' : 'click to open'}
+                      </div>
+                      <span style={{
+                        position: 'absolute', top: '100%', left: `${anchor}%`, transform: 'translateX(-50%)',
+                        width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent',
+                        borderTop: '6px solid var(--brand-dark)',
+                      }} />
+                    </div>
+                  );
+                })()}
+                {picker?.laneIdx === laneIdx && (() => {
+                  const m = lane.milestones[picker.msIdx];
+                  if ((m.kind !== 'all' && m.kind !== 'group') || !m.wpEntries) return null;
+                  const f = frac(m.date);
+                  const anchor = f > 0.78 ? 88 : f < 0.22 ? 12 : 50;
+                  return (
+                    <div ref={pickerRef} style={{
+                      position: 'absolute', left: leftOf(f), bottom: 'calc(50% + 16px)', transform: `translateX(-${anchor}%)`,
+                      zIndex: 12, background: 'var(--brand-dark)', color: '#fff', borderRadius: 'var(--radius-sm)',
+                      padding: '8px 11px', font: 'var(--text-caption)', maxWidth: 372, minWidth: 240, boxShadow: 'var(--shadow-pop)',
+                    }}>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>{lane.project.name}</div>
+                      <div style={{ color: 'rgba(255,255,255,0.7)', font: 'var(--text-mono-sm)', marginBottom: 4 }}>Which package?</div>
+                      {/* Unlike the tooltip this list is never capped — it is what the
+                          tooltip's "+N more" sends you to, so it has to hold all of them. */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 'calc(46vh / var(--ui-scale))', overflowY: 'auto' }}>
+                        {m.wpEntries.map((e) => (
+                          <button
+                            key={e.wpId}
+                            type="button"
+                            onClick={() => { setPicker(null); onJumpItem(lane.project.id, e.itemId); }}
+                            title={`Open ${e.label} — Req. ${fmtMDY(e.date)}`}
+                            style={{
+                              display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr) auto', alignItems: 'baseline', columnGap: 6,
+                              textAlign: 'left', background: 'transparent', border: 'none', color: '#fff',
+                              padding: '4px 6px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', font: 'var(--text-caption)',
+                            }}
+                            onMouseEnter={(ev) => { ev.currentTarget.style.background = 'rgba(255,255,255,0.14)'; }}
+                            onMouseLeave={(ev) => { ev.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <ReadinessTick readiness={e.readiness} supplyOnly={e.supplyOnly} word={false} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.label}</span>
+                            <span style={{ font: 'var(--text-mono-sm)', whiteSpace: 'nowrap' }}>
+                              <ReadinessTick readiness={e.readiness} supplyOnly={e.supplyOnly} tick={false} />
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ borderTop: '1px solid rgba(255,255,255,0.2)', marginTop: 6, paddingTop: 6 }}>
+                        <button
+                          type="button"
+                          onClick={() => { setPicker(null); onJumpProject(lane.project.id); }}
+                          style={{
+                            textAlign: 'left', background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.7)',
+                            padding: '2px 6px', cursor: 'pointer', font: 'var(--text-mono-sm)', width: '100%',
+                          }}
+                          onMouseEnter={(ev) => { ev.currentTarget.style.color = '#fff'; }}
+                          onMouseLeave={(ev) => { ev.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+                        >
+                          Open project →
+                        </button>
                       </div>
                       <span style={{
                         position: 'absolute', top: '100%', left: `${anchor}%`, transform: 'translateX(-50%)',
@@ -1112,6 +1334,12 @@ export function OverviewScreen() {
         // Green ring = every item reached its scope's closing stage (installed, or merely
         // on site when the package is supply only).
         complete: xs.every((x) => isClosed(x.i, x.supplyOnly)),
+        // Measured over `xs` — the DATED items — and not over the package's full roster,
+        // deliberately: `complete` and `orderNow` right above already scope themselves that
+        // way, and a dot whose ✓ disagreed with its own ring would be worse than a dot that
+        // ignores an undated item (which this whole lane already does).
+        readiness: packageReadiness(xs.map((x) => x.i), earliest.supplyOnly),
+        supplyOnly: earliest.supplyOnly,
       };
     }).sort((a, b) => a.date.localeCompare(b.date));
     // The anchor is `!m.complete`, not a date comparison (lote 63 — same fix batch 57 made
@@ -1137,29 +1365,66 @@ export function OverviewScreen() {
     });
     const fmMilestones: Milestone[] = [...fmByWp.values()].map((xs) => {
       const earliest = [...xs].sort((a, b) => a.i.fieldDate.localeCompare(b.i.fieldDate))[0];
-      return { date: earliest.i.fieldDate, label: earliest.pkg.label, kind: 'fm' as const, itemId: earliest.i.id, wpId: earliest.pkg.id, orderNow: false, complete: false };
+      return {
+        date: earliest.i.fieldDate, label: earliest.pkg.label, kind: 'fm' as const, itemId: earliest.i.id, wpId: earliest.pkg.id,
+        orderNow: false, complete: false, readiness: 'none' as const, supplyOnly: earliest.supplyOnly,
+      };
     }).sort((a, b) => a.date.localeCompare(b.date));
     if (visible.length === 0 && fmMilestones.length === 0) return { project, milestones: [] };
-    const allSame = visible.length > 0 && visible.every((m) => m.date === visible[0].date);
-    const milestones: Milestone[] = allSame && visible.length > 1
-      ? [{
-          // A supply-only project's collapsed milestone is the delivery, not the install.
-          date: visible[0].date, label: supplyOnlyProject(project) ? 'All Delivered' : 'All Material Required',
-          kind: 'all', itemId: visible[0].itemId, wpId: undefined,
-          orderNow: withDate.some((x) => x.c.status === 'order-now'),
-          complete: withDate.every((x) => isClosed(x.i, x.supplyOnly)),
-        }]
-      : visible;
+    // Collapse by RENDERED POSITION, not by raw date. Two packages that share a Req. date
+    // land on the same pixel — but so do two OVERDUE packages with DIFFERENT dates, because
+    // `frac` clamps everything before today onto the TODAY line. Both cases used to render
+    // as separate buttons stacked on the identical spot, where hover and click only ever
+    // reached whichever one the DOM painted last. Keying on the CLAMPED date fixes both.
+    const todayForLanes = today();
+    const posKey = (m: Milestone) => (m.date < todayForLanes ? todayForLanes : m.date);
+    const byPos = new Map<string, Milestone[]>();
+    visible.forEach((m) => {
+      const g = byPos.get(posKey(m));
+      if (g) g.push(m); else byPos.set(posKey(m), [m]);
+    });
+    const milestones: Milestone[] = [...byPos.values()].map((group) => {
+      if (group.length === 1) return group[0];
+      // 'all' keeps the collective wording only when the dot really is every open package
+      // in the project; a partial group says how much of the project it is instead.
+      const isAll = group.length === visible.length;
+      // One scope for the whole dot, and a mixed group reads as supply-and-install: 📍 is
+      // only a finish line when NOTHING on the dot still needs installing, so the
+      // conservative side is the one that doesn't call a half-done group "delivered".
+      const supplyOnly = group.every((m) => m.supplyOnly);
+      // `visible` is date-sorted, so group[0] is the earliest — which is the date the dot
+      // renders at (they all clamp to the same place when they're overdue).
+      return {
+        date: group[0].date,
+        // "Req." in both scopes, deliberately: the Req. date means the same thing whether
+        // or not we install it, so a supply-only project no longer announces "✅ All
+        // Delivered" over material nobody has even ordered. The date is the headline; what
+        // the material has actually DONE is the readiness ✓, which cannot contradict itself.
+        label: isAll ? 'All Req.' : `${group.length} of ${visible.length} Req.`,
+        kind: isAll ? ('all' as const) : ('group' as const),
+        itemId: group[0].itemId, wpId: undefined,
+        orderNow: group.some((m) => m.orderNow),
+        complete: group.every((m) => m.complete),
+        // The tier EVERY package on the dot has cleared. Same min-not-count rule as
+        // `packageReadiness` itself, one level up.
+        readiness: group.reduce<PkgReadiness>((lo, m) => (readinessRank(m.readiness) < readinessRank(lo) ? m.readiness : lo), 'installed'),
+        supplyOnly,
+        spread: group.some((m) => m.date !== group[0].date),
+        wpEntries: group.map((m) => ({ wpId: m.wpId!, label: m.label, itemId: m.itemId, date: m.date, readiness: m.readiness, supplyOnly: m.supplyOnly })),
+      };
+    }).sort((a, b) => a.date.localeCompare(b.date));
     return { project, milestones: [...milestones, ...fmMilestones] };
   }).filter((l) => l.milestones.length > 0);
 
   // Drag / button reschedule — set the same On-Site (or Field Measure) date on a
-  // package's items (or the whole project for the collapsed "all" milestone). Edits
-  // the draft live.
-  const setMilestoneDate = (projectId: string, wpId: string | undefined, iso: string, field: 'onsite' | 'fieldDate') => {
+  // package's items (or the packages a collapsed dot actually stands for). Edits the
+  // draft live.
+  const setMilestoneDate = (projectId: string, wpId: string | undefined, iso: string, field: 'onsite' | 'fieldDate', wpIds?: string[]) => {
     const ids = wpId
       ? db.items.filter((i) => i.wpId === wpId).map((i) => i.id)
-      : db.packages.filter((p) => p.projectId === projectId).flatMap((p) => db.items.filter((i) => i.wpId === p.id).map((i) => i.id));
+      : wpIds
+        ? db.items.filter((i) => wpIds.includes(i.wpId)).map((i) => i.id)
+        : db.packages.filter((p) => p.projectId === projectId).flatMap((p) => db.items.filter((i) => i.wpId === p.id).map((i) => i.id));
     if (!ids.length) return;
     actions.bulkEditItems(ids, field === 'fieldDate' ? { fieldDate: iso } : { onsite: iso });
     // Confirming the drag IS the save: Overview reads report snapshots, so leaving the
@@ -1168,6 +1433,13 @@ export function OverviewScreen() {
     // Save. Both calls are functional setDb updates, so the publish sees the new date;
     // the undo snapshot is taken before either, so one Undo reverts the whole thing.
     if (wpId) actions.savePackageToReport(wpId);
+    // A collapsed dot carries the exact packages it stands for, and only those get moved:
+    // saveAllToReport would drag along an unrelated package on a group's drag, and — the
+    // subtler one — a package that is already closed out and has therefore dropped off the
+    // lane entirely, which the user cannot even see to expect it.
+    else if (wpIds) actions.savePackagesToReport(wpIds);
+    // Kept as the fallback for a caller that genuinely means the whole project. The
+    // timeline no longer takes it: every multi-package dot passes `wpIds`.
     else actions.saveAllToReport(projectId);
   };
 

@@ -12,9 +12,9 @@ import type { Db, DeliveryRecord, MaterialItem, Project, ReportSnapshot, WorkPac
 import { VENDORS_SEED } from '../seed/catalogs';
 import {
   addDays, addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, awaitingInstall, backorderQty, closesAtSite, closeVia, closingStage,
-  computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, detourOf, diffDays, fieldMeasurePending, fmtDays, fmtFileStamp, fmtLong, fmtMDY,
+  computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, detourOf, diffDays, fieldMeasurePending, fmtDays, fmtFileStamp, fmtLong, fmtMD, fmtMDY,
   hasOpenBackorder, INSTALL_DEFAULTS, installCap, isClosed, isPartial, isPartiallyInstalled, itemDirty, itemStage, logDrivesStage, matchVendor,
-  migrateDb, mosaicCards, normalizeUm, normQty, packageProgressFlag, parseISO, pendingInstallQty, prefixCompare, progressPct, projectClosesAtSite, removeDeliveryFrom,
+  migrateDb, mosaicCards, normalizeUm, normQty, packageProgressFlag, packageReadiness, parseISO, pendingInstallQty, prefixCompare, progressPct, projectClosesAtSite, READINESS_META, readinessMark, removeDeliveryFrom,
   removeInstallFrom, REPORT_FIELDS, snapshot, splitDescription, stableSlot, stagePatch, SUBMITTAL_DEFAULTS, submittalApproved,
   submittalBlockers, today, toISO, totalQty,
 } from './logic';
@@ -392,6 +392,82 @@ describe('closesAtSite / projectClosesAtSite / isClosed / awaitingInstall', () =
     expect(itemStage(snap({ delivered: true }))).toBe('warehouse');
     expect(itemStage(snap({ delivered: true, siteDate: '2026-07-10' }))).toBe('on-site');
     expect(itemStage(snap({ delivered: false, installed: true }))).toBe('installed');
+  });
+});
+
+describe('packageReadiness — the furthest stage EVERY item in the package has reached', () => {
+  const bought = (over: Partial<ReportSnapshot> = {}) => snap({ po: 'PO-1', ...over });
+
+  it('is a MIN, not a count: one straggler holds the whole package back', () => {
+    const installed = bought({ delivered: true, installed: true });
+    const warehouse = bought({ delivered: true });
+    expect(packageReadiness([installed, installed])).toBe('installed');
+    expect(packageReadiness([installed, warehouse])).toBe('warehouse');
+  });
+
+  it('walks the whole ladder', () => {
+    expect(packageReadiness([snap()])).toBe('none'); // no PO# yet
+    expect(packageReadiness([bought()])).toBe('ordered');
+    expect(packageReadiness([bought({ delivered: true })])).toBe('warehouse');
+    expect(packageReadiness([bought({ delivered: true, siteDate: '2026-07-10' })])).toBe('on-site');
+    expect(packageReadiness([bought({ delivered: true, installed: true })])).toBe('installed');
+  });
+
+  it('an empty package is not a finished one', () => {
+    expect(packageReadiness([])).toBe('none');
+  });
+
+  it('supply-only tops out at on-site — installing is not ours', () => {
+    const installed = bought({ delivered: true, installed: true });
+    expect(packageReadiness([installed], true)).toBe('on-site');
+    // A supply-only package that mixes "installed" and "on site" is entirely closed, and
+    // both land on the same terminal tier rather than one dragging the other down.
+    expect(packageReadiness([installed, bought({ delivered: true, siteDate: '2026-07-10' })], true)).toBe('on-site');
+  });
+
+  it('OFCI counts as bought but never as received (the stagePatch rule)', () => {
+    // `stagePatch` refuses a receipt on OFCI, so 'ordered' is genuinely its ceiling —
+    // this asserts the tier does not silently promote owner-furnished material.
+    expect(packageReadiness([snap({ po: 'OFCI' })])).toBe('ordered');
+    expect(packageReadiness([snap({ po: 'OFCI', installed: true })])).toBe('installed');
+  });
+
+  it('fmtMD drops the year the heading already carries', () => {
+    expect(fmtMD('2026-07-18')).toBe('07/18');
+    expect(fmtMD('')).toBe(''); // same empty-input contract as fmtMDY
+  });
+
+  it('readinessMark relabels only the one scope-dependent tier', () => {
+    expect(readinessMark('on-site', false)).toEqual(READINESS_META['on-site']);
+    // Reaching the jobsite IS the finish when we only supply, so it earns the terminal
+    // green — the same green 'installed' gets on the other side of the scope.
+    expect(readinessMark('on-site', true)).toEqual({ glyph: '✓', word: 'delivered', token: '--success-border' });
+    expect(readinessMark('installed', false).token).toBe('--success-border');
+  });
+
+  it('"nothing ordered yet" is an answer, not an absence — and it is the alarm rung', () => {
+    const none = readinessMark('none');
+    expect(none.word).toBe('not ordered');
+    expect(none.glyph).toBe('·');
+    expect(none.token).toBe('--alert-on-dark');
+    // Every other rung did clear something, so every other rung ticks.
+    (['ordered', 'warehouse', 'on-site', 'installed'] as const).forEach((r) => {
+      expect(readinessMark(r).glyph).toBe('✓');
+    });
+  });
+
+  it('the five tiers are five DISTINCT colours, all of them theme-flat', () => {
+    // The tooltip sits on --brand-dark, which is never redeclared in the dark block, so a
+    // tier token that IS redeclared would drift off a surface that does not move. Asserting
+    // that against colors.css directly is not available here (vitest stubs CSS imports to
+    // ''), so the invariant is pinned as an allowlist: every token below is declared ONLY
+    // in :root. Adding a tier means checking colors.css by hand and adding it here on
+    // purpose, which is the point.
+    const THEME_FLAT = ['--alert-on-dark', '--status-ordered', '--brand-orange', '--brand-teal', '--success-border'];
+    const tokens = Object.values(READINESS_META).map((m) => m.token);
+    tokens.forEach((t) => expect(THEME_FLAT).toContain(t));
+    // Distinct, because the colour is half of how a tier identifies itself.
+    expect(new Set(tokens).size).toBe(tokens.length);
   });
 });
 
