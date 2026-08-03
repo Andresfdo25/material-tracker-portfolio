@@ -3,14 +3,18 @@
 // by project → work package with item counts. All read published report snapshots.
 import { Fragment, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useApp } from '../store/useApp';
-import { awaitingInstall, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMDY, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, parseISO, projectClosesAtSite, submittalBlockers, today, totalQty, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type WaitSeverity } from '../store/logic';
-import type { ComputedItem, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
+import { awaitingInstall, backorderQty, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMDY, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, parseISO, pendingInstallQty, projectClosesAtSite, stageMoves, submittalBlockers, today, totalQty, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type StageMoves, type WaitSeverity } from '../store/logic';
+import type { ComputedItem, ItemStage, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
 import { StatusBadge } from '../components/ds/StatusBadge';
 import { Button } from '../components/ds/Button';
 import { Modal } from '../components/ds/Modal';
 import { InstallMosaic } from '../components/InstallMosaic';
 import { presetListFilter } from '../store/listFilter';
 import { LateDeliveriesModal, PartialDeliveryModal, AwaitingCloseModal } from '../components/OverviewClockModals';
+import { PackageCloseOutModal, type PackageItemRow } from '../components/PackageCloseOutModal';
+import type { MoveTarget } from '../components/StageMoveButtons';
+import { ItemQuickEditModal, type QuickEditPatch, type QuickEditRow } from '../components/ItemQuickEditModal';
+import { ConfirmDateModal, type DatePrompt } from '../components/ConfirmDateModal';
 import { card, td, tdL, th, thL } from '../components/ds/overviewTable';
 
 export interface Enriched {
@@ -31,12 +35,17 @@ const STATUS_RANK: Record<ItemStatus, number> = {
 /* Install urgency → sort weight for the stage tables (worst first). */
 const URGENCY_RANK: Record<InstallUrgency, number> = { overdue: 3, 'due-soon': 2, unscheduled: 1, scheduled: 0 };
 
-/* One work package that already has material in hand — a row of the Detailed table under
- * Delivery and installation status. `closed` counts the items that reached the package's
- * closing stage; `awaiting` the ones still short of it. */
+/* One work package of the Detailed table under Delivery and installation status — every
+ * package with published items, not only the ones with material already in hand (see
+ * `stageGroups`). `closed` counts the items that reached the package's closing stage,
+ * `open` the ones that haven't, and `awaiting` the subset of those that is already here
+ * and waiting — the three numbers the bar draws. */
 interface StageGroup {
   key: string; projectId: string; projectName: string; wpId: string; wpLabel: string;
-  items: number; warehouse: number; site: number; closed: number; awaiting: number;
+  items: number; warehouse: number; site: number; closed: number; awaiting: number; open: number;
+  /** 🔩 installed — `null` on a supply-only package, where the column doesn't apply (that
+   * scope closes when it reaches the jobsite, and somebody else does the installing). */
+  installed: number | null;
   nextOnsite: string; urgency: InstallUrgency; itemId: string;
   /** Longest wait among the items still short of the closing stage — the aging signal the
    * Waiting column prints. */
@@ -46,17 +55,22 @@ interface StageGroup {
   rows: Enriched[];
   supplyOnly: boolean;
 }
-interface ProjBlock { projectId: string; projectName: string; packages: StageGroup[]; awaiting: number; closed: number }
+interface ProjBlock { projectId: string; projectName: string; packages: StageGroup[]; open: number; closed: number }
 
-/** One ⏰ late delivery — a row per ITEM, because the two ways out of it (reschedule the
- * promised date, or confirm it arrived) are decisions about one item. */
+/** One ⏰ late delivery — a row per ITEM, because the ways out of it are decisions about
+ * one item: reschedule the promised date, or say where the material actually ended up.
+ * That second half used to be a single "it arrived" that meant 🏭 warehouse and nothing
+ * else — a truck three weeks late often unloads straight at the jobsite, and forcing that
+ * through the warehouse recorded something that didn't happen. It's now the same
+ * three-stage group the mosaic's package window offers. */
 export interface LateRow {
   key: string; projectId: string; projectName: string; wpId: string; wpLabel: string; itemId: string;
   description: string; vendor: string; po: string; promised: string; behind: number;
-  /** Why a plain "it arrived" would be refused here ('' = it goes through). Both cases end
-   * in `stagePatch` returning no receipt, so the button says where to do it instead of
-   * looking clickable and doing nothing. */
-  blocked: '' | 'log' | 'partial';
+  stage: ItemStage;
+  /** Supply only → 📍 on site IS the close-out, and 🔩 is not offered. */
+  supplyOnly: boolean;
+  /** Which stage writes would land, resolved against the live draft (`stageMoves`). */
+  moves: StageMoves;
 }
 
 /** Packages under a project header row. Projects keep the worst-first order of their most
@@ -68,7 +82,7 @@ function groupByProject(rows: StageGroup[]): ProjBlock[] {
     projectId: gs[0].projectId,
     projectName: gs[0].projectName,
     packages: gs,
-    awaiting: gs.reduce((s, g) => s + g.awaiting, 0),
+    open: gs.reduce((s, g) => s + g.open, 0),
     closed: gs.reduce((s, g) => s + g.closed, 0),
   }));
 }
@@ -418,17 +432,26 @@ function BadgeDrillModal({ card, badge, onClose, onJumpItem }: {
   );
 }
 
-/** The stage table — every package with material in hand, both scopes in one list. Scope
- * is a per-ROW property: it picks the closing stage (🔩 installed / 📍 on site) and
- * nothing else, so Detailed covers the same portfolio the mosaic does.
+/** The stage table — the tabular twin of the mosaic: every package with published items,
+ * both scopes, one row each. Scope is a per-ROW property: it picks the closing stage
+ * (🔩 installed / 📍 on site) and nothing else, so Detailed covers the same portfolio the
+ * mosaic does.
+ *
+ * It used to start at "material already in hand", and called "still open" whatever had
+ * something received and wasn't closed. Supply-only material usually ships straight to
+ * the jobsite, which closes it on arrival — so those packages were never "still open" and
+ * the default view dropped them. Now the row list is the mosaic's, and *still open* means
+ * the package has items short of its finish line, wherever they physically are.
  *
  * — **Items** and **Waiting** apply to both scopes: a crate that has sat received for six
- *   weeks is just as stale when we are the ones who will install it.
- * — The closing count column is gone: it printed the same number as the bar's solid
- *   segment, the % beside it and the project header — pure redundancy.
- * — **🏭 / 📍** are what is left of *pending*, by where it sits. For a supply-only row 📍
- *   is structurally empty (arriving on site IS closing out), so it prints a dash rather
- *   than a zero that would read like a shortfall. */
+ *   weeks is just as stale when we are the ones who will install it. Waiting stays about
+ *   material IN HAND — something that never arrived hasn't been waiting anywhere.
+ * — **🔩 Installed** is back as a column: the bar answers "how far along", the number
+ *   answers "how many are up". On a supply-only row it prints a dash — that scope closes
+ *   at 📍 and somebody else does the installing.
+ * — **🏭 / 📍 / 🔩** are a partition of what's here, by where it sits. On a supply-only row
+ *   📍 holds the items already done (arriving IS closing out), which is why it's 🔩 that
+ *   goes empty there and not both — a dash, never a zero that reads like a shortfall. */
 function StageTable({ blocks, empty, collapsed, onToggle, onJumpProject, onJumpItem, onDrill }: {
   blocks: ProjBlock[];
   empty: string;
@@ -439,19 +462,19 @@ function StageTable({ blocks, empty, collapsed, onToggle, onJumpProject, onJumpI
   /** Open the per-item aging list for one package. */
   onDrill: (g: StageGroup) => void;
 }) {
-  const cols = 8;
+  const cols = 9;
   return (
-    // `overflow: auto` y no el `hidden` que traía: son ocho columnas, así que abajo de
-    // ~1100px locales las últimas se salían de la caja y quedaban RECORTADAS, sin barra
-    // para llegar a ellas.
+    // `overflow: auto` — nine columns, so below ~1100px local the last ones ran off the
+    // box with no way to reach them.
     <div style={{ ...card, overflow: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--surface-soft)' }}>
             <th style={thL}>Work package</th>
-            <th style={th} title="Items in hand — click a count for the per-item list">Items</th>
-            <th style={th} title="In the warehouse, not closed out yet">🏭</th>
-            <th style={th} title="On site, not installed yet — empty where the package closes on site">📍</th>
+            <th style={th} title="Every published item in this package — click a count for the per-item list">Items</th>
+            <th style={th} title="In the warehouse">🏭</th>
+            <th style={th} title="On site — where the package closes on site, these are the ones already done">📍</th>
+            <th style={th} title="Installed — a dash where the package is supply only and somebody else installs it">🔩</th>
             <th style={thL}>On-Site Req.</th>
             <th style={th} title="Longest wait since the material was received">Waiting</th>
             <th style={{ ...thL, width: 132 }}>Closed out</th>
@@ -471,7 +494,7 @@ function StageTable({ blocks, empty, collapsed, onToggle, onJumpProject, onJumpI
                     <span style={{ color: 'var(--muted)' }}>{collapsed[proj.projectId] ? '▸' : '▾'}</span>
                     <span>{proj.projectName}</span>
                     <span style={{ color: 'var(--muted)', fontWeight: 500 }}>
-                      {proj.packages.length} pkg · {proj.awaiting} awaiting · {proj.closed} closed out
+                      {proj.packages.length} pkg · {proj.open} open · {proj.closed} closed out
                     </span>
                     <span style={{ flex: 1 }} />
                     <button
@@ -489,7 +512,7 @@ function StageTable({ blocks, empty, collapsed, onToggle, onJumpProject, onJumpI
                 // Urgency is carried by the On-Site cell itself (full-strength pastel +
                 // its own ink), not a row tint: those two tokens are theme-invariant, so
                 // it stays legible in dark mode — a mixed-with-canvas tint would not.
-                const tone = g.awaiting === 0 ? undefined
+                const tone = g.open === 0 ? undefined
                   : g.urgency === 'overdue' ? { bg: 'var(--status-order-now)', ink: 'var(--status-order-now-ink)' }
                     : g.urgency === 'due-soon' ? { bg: 'var(--status-order-soon)', ink: 'var(--status-order-soon-ink)' }
                       : g.urgency === 'unscheduled' ? { bg: 'var(--status-needs-data)', ink: 'var(--status-needs-data-ink)' }
@@ -525,7 +548,7 @@ function StageTable({ blocks, empty, collapsed, onToggle, onJumpProject, onJumpI
                       <Button
                         variant="ghost"
                         size="sm"
-                        title={`${g.items} item${g.items === 1 ? '' : 's'} in hand — see how long each has been waiting`}
+                        title={`${g.items} item${g.items === 1 ? '' : 's'} — see where each one stands and how long it has been waiting`}
                         onClick={(e) => { e.stopPropagation(); onDrill(g); }}
                         style={{ padding: '2px 9px', font: 'var(--text-mono)', fontWeight: 700 }}
                       >
@@ -533,22 +556,25 @@ function StageTable({ blocks, empty, collapsed, onToggle, onJumpProject, onJumpI
                       </Button>
                     </td>
                     <td style={{ ...td, fontWeight: g.warehouse ? 600 : 400, color: g.warehouse ? 'var(--ink)' : 'var(--muted)' }}>{g.warehouse}</td>
-                    <td style={{ ...td, color: !g.supplyOnly && g.site ? 'var(--ink)' : 'var(--muted)' }}>
-                      {g.supplyOnly ? '—' : g.site}
+                    <td style={{ ...td, color: g.site ? 'var(--ink)' : 'var(--muted)' }}>{g.site}</td>
+                    {/* A dash and not a zero: on a supply-only package nobody of ours
+                        installs, so a 0 there would read like a shortfall. */}
+                    <td style={{ ...td, color: g.installed ? 'var(--ink)' : 'var(--muted)' }}>
+                      {g.installed == null ? '—' : g.installed}
                     </td>
                     <td style={{ ...td, textAlign: 'left', font: 'var(--text-mono)', fontWeight: 600, background: tone?.bg, color: tone?.ink ?? 'var(--ink)', whiteSpace: 'nowrap' }}>
-                      {g.awaiting === 0 ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>— done</span>
+                      {g.open === 0 ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>— done</span>
                         : g.nextOnsite ? `${g.urgency === 'overdue' ? '⚠ ' : ''}${fmtMDY(g.nextOnsite)}`
                           : '❔ no date'}
                     </td>
-                    <WaitCell days={g.awaiting === 0 ? null : g.waited} />
+                    <WaitCell days={g.open === 0 ? null : g.waited} />
                     <td style={tdL}>
                       <InstallBar
                         closed={g.closed}
                         awaiting={g.awaiting}
                         total={g.items}
                         tone={g.supplyOnly ? 'site' : 'install'}
-                        title={`${g.closed} ${g.supplyOnly ? '📍 on site' : '🔩 installed'} · ${g.awaiting} awaiting · ${g.items} in hand`}
+                        title={`${g.closed} ${g.supplyOnly ? '📍 on site' : '🔩 installed'} · ${g.awaiting} received and waiting · ${g.items - g.closed - g.awaiting} not here yet · ${g.items} items`}
                       />
                     </td>
                     <td style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>›</td>
@@ -933,6 +959,16 @@ export function OverviewScreen() {
   const [showLate, setShowLate] = useState(false);
   const [showPartial, setShowPartial] = useState(false);
   const [showAwaiting, setShowAwaiting] = useState(false);
+  // The package whose close-out window is open, if any — a mosaic bar click. Coordinates,
+  // not the row, for the same reason as `drillKey`: rows are rebuilt every render, so the
+  // modal follows live data and updates itself right after a write.
+  const [pkgModal, setPkgModal] = useState<{ projectId: string; wpId: string } | null>(null);
+  // The quick-edit window, likewise by coordinates — which items and what title, never
+  // the values themselves.
+  const [quickEdit, setQuickEdit] = useState<{ title: string; caption: string; ids: string[] } | null>(null);
+  // The date a board write is waiting on. One state for every button that moves material:
+  // each builds its own `DatePrompt` (text + `onConfirm`) and the modal only asks the day.
+  const [datePrompt, setDatePrompt] = useState<DatePrompt | null>(null);
 
   const activeProjects = db.projects
     .filter((p) => !p.archived)
@@ -1148,12 +1184,12 @@ export function OverviewScreen() {
       key: x.i.id, projectId: x.projectId, projectName: db.projects.find((p) => p.id === x.projectId)?.name ?? '',
       wpId: x.pkg.id, wpLabel: x.pkg.label, itemId: x.i.id, description: x.r.description, vendor: x.r.vendor, po: x.r.po,
       promised: x.r.shipDate, behind: daysLate(x.r) ?? 0,
-      // `deliveries` is read off the DRAFT, not the snapshot — it isn't a report field, and
-      // the question is whether the write would land at all: `stagePatch` refuses a manual
-      // stage once the log owns it. A half-delivered item is refused for the other reason
-      // (batch 43): "it arrived" there means the REST arrived, which is a quantity, and
-      // quantities are registered in Breakdown Delivery.
-      blocked: (logDrivesStage(x.i.deliveries) ? 'log' : hasOpenBackorder(x.r) ? 'partial' : '') as LateRow['blocked'],
+      // The verdict is resolved against the live DRAFT (`x.i`), not the snapshot — the
+      // question is whether the write would land, and that's `stagePatch`'s call reading
+      // the delivery log, which isn't a report field. Same `stageMoves` the mosaic's
+      // package window uses — a half-delivered item, for instance, refuses the receipt for
+      // the batch-43 reason and the button says so.
+      stage: itemStage(x.r), supplyOnly: x.supplyOnly, moves: stageMoves(x.i, x.supplyOnly),
     }))
     .sort((a, b) => b.behind - a.behind || a.projectName.localeCompare(b.projectName));
   // ---- The two ways out of a late delivery, from the row itself (spec §3 / Fase 4) ----
@@ -1176,58 +1212,136 @@ export function OverviewScreen() {
     actions.editItem(r.itemId, { shipDate: iso });
     actions.savePackageToReport(r.wpId);
   };
-  const confirmArrived = (r: LateRow) => {
-    const ok = window.confirm(
-      `Mark "${r.description}" as received?`
-      + `\n\nIt lands in 🏭 the warehouse stamped today — move it on to 📍 on site or 🔩 installed from the Material List.`
-      + `\n\nThis publishes ${r.wpLabel} to the report — any other pending edits in it go too. Undo is available right after.`,
-    );
-    if (!ok) return;
-    // The stage has one writer (lote 40): never an editItem({ delivered }) from here.
-    actions.setItemStage([r.itemId], 'warehouse');
-    actions.savePackageToReport(r.wpId);
+  // Lote 64 — the publish notice stays, but the PM sets the date: registering isn't
+  // witnessing, and the truck arrived Friday even if this gets logged Monday.
+  const publishNote = (wpLabel: string) => (
+    <>This publishes <strong>{wpLabel}</strong> to the report — any other pending edits in it go too. Undo is available right after.</>
+  );
+  /** Everything needed to move an item's stage from the board. The two windows offering
+   * the buttons — ⏰ Late deliveries and the mosaic's package window — build this and the
+   * rest is the same path: ask the date, write through the ONE stage writer (lote 40),
+   * publish the package in the same gesture. */
+  interface MoveCtx {
+    itemId: string; wpId: string; wpLabel: string; description: string;
+    supplyOnly: boolean; installVia: 'stage' | 'install-log' | '';
+  }
+  const promptStageMove = (m: MoveCtx, target: MoveTarget) => {
+    const name = m.description || 'Untitled';
+    if (target === 'warehouse') {
+      setDatePrompt({
+        title: <span>🏭 It arrived</span>,
+        body: (
+          <>
+            "{name}" lands in 🏭 the warehouse on the date you set — move it on to 📍 on site or 🔩 installed from
+            here or the Material List.<br /><br />{publishNote(m.wpLabel)}
+          </>
+        ),
+        label: 'Received on',
+        date: today(),
+        confirmLabel: '🏭 Received',
+        onConfirm: (iso) => { actions.setItemStage([m.itemId], 'warehouse', iso); actions.savePackageToReport(m.wpId); },
+      });
+      return;
+    }
+    if (target === 'on-site') {
+      setDatePrompt({
+        title: <span>📍 {m.supplyOnly ? 'Delivered to the jobsite' : 'On site'}</span>,
+        body: m.supplyOnly
+          ? <>"{name}" closes out 📍 on site — this package is supply only, so reaching the jobsite IS its finish line.<br /><br />{publishNote(m.wpLabel)}</>
+          : <>"{name}" is at the jobsite. It stays open until it is installed.<br /><br />{publishNote(m.wpLabel)}</>,
+        label: m.supplyOnly ? 'Delivered on' : 'On site since',
+        date: today(),
+        confirmLabel: '📍 On site',
+        onConfirm: (iso) => { actions.setItemStage([m.itemId], 'on-site', iso); actions.savePackageToReport(m.wpId); },
+      });
+      return;
+    }
+    if (!m.installVia) return;
+    setDatePrompt({
+      title: <span>🔩 Installed</span>,
+      body: (
+        <>
+          "{name}" closes out 🔩 installed
+          {m.installVia === 'install-log' ? ', as one entry in its installation log covering every unit still pending' : ''}.
+          <br /><br />{publishNote(m.wpLabel)}
+        </>
+      ),
+      label: 'Installed on',
+      date: today(),
+      confirmLabel: '🔩 Installed',
+      onConfirm: (iso) => closeOutItem(m.itemId, m.wpId, false, m.installVia as 'stage' | 'install-log', iso),
+    });
   };
+  const moveLateItem = (r: LateRow, target: MoveTarget) => promptStageMove({ ...r, installVia: r.moves.installVia }, target);
 
   // ---- 🚚 Partially delivered: close the backorder from its gauge (lote 63) ----
   const partialRows = enriched.filter((x) => hasOpenBackorder(x.r));
   const closeBackorder = (x: Enriched) => {
     const total = totalQty(x.r);
     if (total == null) return;
-    const ok = window.confirm(
-      `Close the backorder on "${x.r.description}" — the rest arrived?`
-      + `\n\nThis publishes ${x.pkg.label} to the report — any other pending edits in it go too. Undo is available right after.`,
-    );
-    if (!ok) return;
-    if (logDrivesStage(x.i.deliveries)) {
-      // The log owns the number here — the balance is one more entry, exactly like the
-      // Breakdown Delivery modal registers one (batch 43/44).
-      actions.addDelivery(x.i.id, total - (x.r.receivedQty || 0), 'Closed from Overview');
+    const owed = total - (x.r.receivedQty || 0);
+    setDatePrompt({
+      title: <span>🚚 The rest arrived</span>,
+      body: (
+        <>
+          Registers the <strong>{owed}{x.r.um ? ` ${x.r.um}` : ''}</strong> still owed on "{x.r.description || 'Untitled'}" as
+          received and closes the backorder.<br /><br />{publishNote(x.pkg.label)}
+        </>
+      ),
+      label: 'Balance received on',
+      date: today(),
+      confirmLabel: '✅ Received in full',
+      onConfirm: (iso) => {
+        if (logDrivesStage(x.i.deliveries)) {
+          // The log owns the number here — the balance is one more entry, exactly like the
+          // Breakdown Delivery modal registers one (batch 43/44).
+          actions.addDelivery(x.i.id, owed, 'Closed from Overview', undefined, iso);
+        } else {
+          // No log: `receivedQty` is a QUANTITY, not the stage, so `editItem` closes it —
+          // this does NOT touch delivered/siteDate/installed (CLAUDE.md §4). The date
+          // travels in the SAME patch as the quantity and not as the `setItemStage` date
+          // below: the stage re-affirmed can be on-site or installed, and there that date
+          // would be read as the date OF THAT STAGE and overwrite one that already existed.
+          const before = itemStage(x.r);
+          actions.editItem(x.i.id, { receivedQty: total, receivedDate: iso });
+          actions.setItemStage([x.i.id], 'warehouse');
+          if (before === 'on-site' || before === 'installed') actions.setItemStage([x.i.id], before);
+        }
+        actions.savePackageToReport(x.pkg.id);
+      },
+    });
+  };
+
+  /** The close-out write, shared by the 🏭 gauge window, ⏰ Late deliveries and the
+   * mosaic's package window: same decision on the same item, only where it's taken from
+   * changes. */
+  const closeOutItem = (itemId: string, wpId: string, supplyOnly: boolean, via: 'stage' | 'install-log', iso: string) => {
+    if (via === 'install-log') {
+      const it = db.items.find((i) => i.id === itemId);
+      const room = it ? pendingInstallQty(it) : null;
+      if (room == null || room <= 0) return;
+      actions.addInstall(itemId, room, 'Closed out from Overview', iso);
     } else {
-      // No log: `receivedQty` is a QUANTITY, not the stage, so `editItem` closes it —
-      // this does NOT touch delivered/siteDate/installed (CLAUDE.md §4). Only once the
-      // backorder reads closed can `setItemStage` (→ stagePatch) write the receipt,
-      // which stays its one permitted writer. The stage re-affirmed is the one the item
-      // already had and never 🏭 flat: an item can be installed with an open backorder
-      // (batch 43), so 'warehouse' first (to let stagePatch see the closed backorder and
-      // write `delivered: true`) and then the item's real stage, if it was further along.
-      const before = itemStage(x.r);
-      actions.editItem(x.i.id, { receivedQty: total });
-      actions.setItemStage([x.i.id], 'warehouse');
-      if (before === 'on-site' || before === 'installed') actions.setItemStage([x.i.id], before);
+      actions.setItemStage([itemId], supplyOnly ? 'on-site' : 'installed', iso);
     }
-    actions.savePackageToReport(x.pkg.id);
+    actions.savePackageToReport(wpId);
   };
 
   // ---- 🏭 Awaiting site / install: close the item from its gauge (lote 63) ----
   const closeAwaitingItem = (x: Enriched, stage: 'on-site' | 'installed') => {
-    const label = stage === 'on-site' ? '📍 on site' : '🔩 installed';
-    const ok = window.confirm(
-      `Mark "${x.r.description}" ${label}?`
-      + `\n\nThis publishes ${x.pkg.label} to the report — any other pending edits in it go too. Undo is available right after.`,
-    );
-    if (!ok) return;
-    actions.setItemStage([x.i.id], stage);
-    actions.savePackageToReport(x.pkg.id);
+    setDatePrompt({
+      title: <span>{stage === 'on-site' ? '📍' : '🔩'} {stage === 'on-site' ? 'On site' : 'Installed'}</span>,
+      body: (
+        <>
+          "{x.r.description || 'Untitled'}" closes out {stage === 'on-site' ? '📍 on site' : '🔩 installed'}.
+          <br /><br />{publishNote(x.pkg.label)}
+        </>
+      ),
+      label: stage === 'on-site' ? 'On site since' : 'Installed on',
+      date: today(),
+      confirmLabel: stage === 'on-site' ? '📍 On site' : '🔩 Installed',
+      onConfirm: (iso) => { actions.setItemStage([x.i.id], stage, iso); actions.savePackageToReport(x.pkg.id); },
+    });
   };
 
   // Buy-By within 14 days, grouped by project → work package.
@@ -1269,38 +1383,49 @@ export function OverviewScreen() {
     }).sort((a, b) => a.nearest.localeCompare(b.nearest) || a.projectName.localeCompare(b.projectName));
   })();
 
-  // Stage status by work package — every package that already has material in hand.
-  // Scope is read off the PACKAGE, not the project: a supply-only package closes at 📍
-  // even inside a supply-and-install project, and vice versa. (The project's flag only
-  // drives the Portfolio grouping and the mosaic card's badge family.)
+  // Stage status by work package — EVERY package with published items, the same universe
+  // the mosaic charts. It used to start at "has material in hand", which quietly excluded
+  // most supply-only work: material that ships straight to the site closes on arrival, so
+  // those packages were never *still open* and the default view dropped them. Scope is
+  // read off the PACKAGE, not the project: a supply-only package closes at 📍 even inside
+  // a supply-and-install project, and vice versa. (The project's flag only drives the
+  // Portfolio grouping and the mosaic card's badge family.)
   const stageGroups: StageGroup[] = (() => {
     const m = new Map<string, Enriched[]>();
     enriched.forEach((x) => {
-      if (!awaitingInstall(x.r, x.supplyOnly) && !isClosed(x.r, x.supplyOnly)) return; // nothing in hand yet
       const k = `${x.projectId}|${x.pkg.id}`;
       const g = m.get(k); if (g) g.push(x); else m.set(k, [x]);
     });
     return [...m.entries()].map(([key, xs]) => {
       const supplyOnly = xs[0].supplyOnly;
+      // Three nested sets: everything, what hasn't closed (`open`), and the part of that
+      // already here and waiting (`awaiting`).
+      const open = xs.filter((x) => !isClosed(x.r, x.supplyOnly));
       const pend = xs.filter((x) => awaitingInstall(x.r, x.supplyOnly));
-      const closed = xs.filter((x) => isClosed(x.r, x.supplyOnly)).length;
-      // The group's urgency and target date come from the items still pending.
-      const dated = pend.filter((x) => x.r.onsite).sort((a, b) => a.r.onsite.localeCompare(b.r.onsite));
-      const worst = pend.map(awaitingUrgency).sort((a, b) => URGENCY_RANK[b] - URGENCY_RANK[a])[0] ?? 'scheduled';
+      const closed = xs.length - open.length;
+      const at = (s: ItemStage) => xs.filter((x) => itemStage(x.r) === s).length;
+      // Urgency and target date come from everything still open — including material that
+      // hasn't shipped yet, whose Req. date is just as passed.
+      const dated = open.filter((x) => x.r.onsite).sort((a, b) => a.r.onsite.localeCompare(b.r.onsite));
+      const worst = open.map(awaitingUrgency).sort((a, b) => URGENCY_RANK[b] - URGENCY_RANK[a])[0] ?? 'scheduled';
+      // Waiting stays about material IN HAND — something that never arrived hasn't been
+      // waiting anywhere.
       const waits = pend.map((x) => daysWaiting(x.r)).filter((d): d is number => d != null);
       return {
         key, projectId: xs[0].projectId, projectName: db.projects.find((p) => p.id === xs[0].projectId)!.name,
         wpId: xs[0].pkg.id, wpLabel: xs[0].pkg.label,
         items: xs.length,
-        warehouse: pend.filter((x) => itemStage(x.r) === 'warehouse').length,
-        // 📍 always means "on site": still pending there when we install, already closed
-        // out when we don't.
-        site: supplyOnly ? closed : pend.filter((x) => itemStage(x.r) === 'on-site').length,
+        warehouse: at('warehouse'),
+        // 📍 always means "on site": still open there when we install, already closed out
+        // when we don't (and then it's the 🔩 column that goes empty, not this one).
+        site: supplyOnly ? closed : at('on-site'),
+        installed: supplyOnly ? null : at('installed'),
         closed,
         awaiting: pend.length,
+        open: open.length,
         nextOnsite: dated[0]?.r.onsite ?? '',
         urgency: worst,
-        itemId: (dated[0] ?? pend[0] ?? xs[0]).i.id,
+        itemId: (dated[0] ?? open[0] ?? xs[0]).i.id,
         waited: waits.length ? Math.max(...waits) : null,
         rows: [...xs].sort((a, b) => (openWait(b) ?? -1) - (openWait(a) ?? -1)),
         supplyOnly,
@@ -1313,8 +1438,9 @@ export function OverviewScreen() {
   // One table for the whole portfolio: the mosaic covers both scopes, so the Detailed
   // view behind it has to as well, or half the cards would have no table to fall back to.
   // Scope is a per-ROW property here — it decides the closing stage, not which table
-  // you are looking at.
-  const stageRows = stagePending ? stageGroups.filter((g) => g.awaiting > 0) : stageGroups;
+  // you are looking at. *Still open* = the package has items short of that stage,
+  // wherever they physically are.
+  const stageRows = stagePending ? stageGroups.filter((g) => g.open > 0) : stageGroups;
   const stageByProject = groupByProject(stageRows);
   const allStageCollapsed = stageByProject.length > 0 && stageByProject.every((p) => stageCollapsed[p.projectId]);
   // Re-read from the live groups, so the modal follows the data instead of a snapshot of
@@ -1331,6 +1457,69 @@ export function OverviewScreen() {
   const mosaic = mosaicCards(activeProjects, mosaicPackages, db.items);
   const drillCard = badgeDrill ? mosaic.find((c) => c.projectId === badgeDrill.projectId) ?? null : null;
 
+  // ---- The window a mosaic package bar opens (lote 64) ----
+  // The bar already summarises Delivery & installation status for that package's items —
+  // clicking it opens that summary's detail instead of sending the PM to hunt it down in
+  // the Material List. Rows are rebuilt here on every render, so the window updates itself
+  // right after each write.
+  const pkgModalPkg = pkgModal ? db.packages.find((p) => p.id === pkgModal.wpId) ?? null : null;
+  const pkgModalSupplyOnly = pkgModalPkg ? closesAtSite(pkgModalPkg, db.projects.find((p) => p.id === pkgModalPkg.projectId)) : false;
+  const pkgRows: PackageItemRow[] = pkgModalPkg
+    ? enriched
+      .filter((x) => x.pkg.id === pkgModalPkg.id)
+      .map((x): PackageItemRow => {
+        const stage = itemStage(x.r);
+        return {
+          key: x.i.id, itemId: x.i.id, description: x.r.description, qty: x.r.qty, um: x.r.um,
+          stage,
+          stageDate: stage === 'installed' ? x.r.installedDate : stage === 'on-site' ? x.r.siteDate : stage === 'warehouse' ? x.r.receivedDate : '',
+          onsite: x.r.onsite, urgency: awaitingUrgency(x),
+          closed: isClosed(x.r, x.supplyOnly),
+          backorder: hasOpenBackorder(x.r) ? backorderQty(x.r) : null,
+          // Against the live DRAFT, which is what `stagePatch` will see.
+          moves: stageMoves(x.i, x.supplyOnly),
+        };
+      })
+      // What's still open first, most urgent within that: the window exists to move
+      // material along, so what CAN move sits on top.
+      .sort((a, b) => Number(a.closed) - Number(b.closed)
+        || URGENCY_RANK[b.urgency] - URGENCY_RANK[a.urgency]
+        || (a.onsite || '9999').localeCompare(b.onsite || '9999'))
+    : [];
+
+  /** A move requested from the package window — same path as from ⏰, only the package
+   * and scope come from the modal instead of the row. */
+  const movePkgItem = (row: PackageItemRow, target: MoveTarget) => {
+    if (!pkgModalPkg) return;
+    promptStageMove({
+      itemId: row.itemId, wpId: pkgModalPkg.id, wpLabel: pkgModalPkg.label,
+      description: row.description, supplyOnly: pkgModalSupplyOnly, installVia: row.moves.installVia,
+    }, target);
+  };
+
+  // ---- The quick edit (lote 64): fill in the data the board is counting ----
+  // Values come off the DRAFT (`x.i`), not the report — they're what the fields are about
+  // to patch. The LIST, though, is chosen by the published status, which is what the board
+  // counted.
+  const quickRows: QuickEditRow[] = quickEdit
+    ? quickEdit.ids
+      .map((id) => enriched.find((x) => x.i.id === id))
+      .filter((x): x is Enriched => !!x)
+      .map((x) => ({
+        key: x.i.id, itemId: x.i.id, wpId: x.pkg.id, wpLabel: x.pkg.label,
+        description: x.i.description, qty: x.i.qty, um: x.i.um, status: x.c.status,
+        lead: x.i.lead, onsite: x.i.onsite, po: x.i.po, poDate: x.i.poDate,
+      }))
+    : [];
+  const saveQuickEdit = (changes: { itemId: string; wpId: string; patch: Partial<QuickEditPatch> }[]) => {
+    // One `editItem` per item, one publish per PACKAGE. Every call is a functional setDb
+    // update and the Undo snapshot is taken before the first one, so a single Undo
+    // reverts the whole batch.
+    changes.forEach((c) => actions.editItem(c.itemId, c.patch));
+    [...new Set(changes.map((c) => c.wpId))].forEach((wpId) => actions.savePackageToReport(wpId));
+    setQuickEdit(null);
+  };
+
   // Portfolio count columns: tighter side padding so the Complete bar (which has to fit
   // its numbers inside) keeps a usable width at half-screen.
   // whiteSpace normal so "ORDER NOW" / "Needs data" wrap to two lines instead of forcing
@@ -1342,9 +1531,50 @@ export function OverviewScreen() {
   const thN: CSSProperties = { ...th, padding: '9px 8px', whiteSpace: 'normal' };
   const tdN: CSSProperties = { ...td, padding: '10px 8px' };
   const jumpProject = (id: string) => { setActiveProjectId(id); nav('list'); };
+  // A Portfolio count opens the quick edit for THOSE items — the Portfolio is the summary
+  // by status, and the status of almost every one of them hinges on four fields. If the
+  // number is the cover of a list, the list should be actionable where it's read.
+  const openStatusEdit = (projectId: string, projectName: string, status: ItemStatus, label: string) => {
+    const ids = enriched.filter((x) => x.projectId === projectId && x.c.status === status).map((x) => x.i.id);
+    if (!ids.length) return;
+    setQuickEdit({
+      title: `${projectName} · ${label}`,
+      caption: `${ids.length} item${ids.length === 1 ? '' : 's'} counted under ${label}.`,
+      ids,
+    });
+  };
+  /** The Buy-By table's count, the other half of the same request: register the PO and
+   * its date without leaving the board. Same window, different trigger. */
+  const openBuyByEdit = (title: string, rows: Enriched[]) => {
+    if (!rows.length) return;
+    setQuickEdit({
+      title,
+      caption: `${rows.length} item${rows.length === 1 ? '' : 's'} to order within the next 14 days — a PO # here takes them off the list.`,
+      ids: rows.map((x) => x.i.id),
+    });
+  };
   // `--alert-ink`: la fecha vencida se pinta sobre `--canvas`, sin pastel debajo.
   const buyByCell = (overdue: boolean): CSSProperties => ({ ...td, textAlign: 'left', font: 'var(--text-mono)', fontWeight: 600, color: overdue ? 'var(--alert-ink)' : 'var(--ink)' });
+  /** One Portfolio count cell. At zero it prints the bare number — a button opening an
+   * empty list is a button that lies. */
+  const countCell = (row: (typeof portfolio)[number], value: number, status: ItemStatus, label: string, cell: CSSProperties) => (
+    <td style={cell}>
+      {value > 0 ? (
+        <button
+          type="button"
+          className="ov-count"
+          title={`${value} ${label} in ${row.project.name} — fill in lead time, On-Site Req., PO # and PO date right here`}
+          onClick={(e) => { e.stopPropagation(); openStatusEdit(row.project.id, row.project.name, status, label); }}
+        >
+          {value}
+        </button>
+      ) : value}
+    </td>
+  );
   const rangeText = (nearest: string, latest: string) => (nearest === latest ? fmtMDY(nearest) : `${fmtMDY(nearest)} → ${fmtMDY(latest)}`);
+  /** Closes a clock modal — unless a date is being asked for on top of it: both listen for
+   * Escape on `document`, so without this guard one keypress closed both. */
+  const dismissClockModal = (close: () => void) => () => { if (!datePrompt) close(); };
 
   // One group-by control, two independent tables (Buy-By and Late deliveries) — same
   // wording both times so the toggle reads as the same idea in both places.
@@ -1501,8 +1731,8 @@ export function OverviewScreen() {
               icon="🏗"
               title="Installation status"
               caption={installView === 'mosaic'
-                ? 'Every project, one bar per package — solid is closed out: 🔩 installed, or 📍 on site where we only supply. Click a bar to open the package, a badge for its list.'
-                : 'Material already in hand, by project › work package — both scopes, each package measured against its own finish line. Waiting counts days since it was received; click an item count for the per-item list.'}
+                ? 'Every project, one bar per package — solid is closed out: 🔩 installed, or 📍 on site where we only supply. Click a bar to move its items along, a badge for its list.'
+                : 'Every package, by project — both scopes, each measured against its own finish line. 🏭 · 📍 · 🔩 say where the material stands; Waiting counts days since it was received. Click an item count for the per-item list.'}
               right={(
                 <>
                   {installView === 'table' && (
@@ -1533,7 +1763,7 @@ export function OverviewScreen() {
                 cards={mosaic}
                 empty="No work packages with items yet — the mosaic fills in as material is added and published."
                 onJumpProject={jumpProject}
-                onJumpItem={jumpToItem}
+                onOpenPackage={(projectId, wpId) => setPkgModal({ projectId, wpId })}
                 onBadgeDrill={(projectId, key) => setBadgeDrill({ projectId, key })}
               />
             ) : (
@@ -1582,7 +1812,20 @@ export function OverviewScreen() {
                     >
                       <td style={tdL}>{g.projectName}</td>
                       <td style={{ ...tdL, color: 'var(--muted)' }}>{g.wpLabel}</td>
-                      <td style={{ ...td, fontWeight: 600 }}>{g.count}</td>
+                      {/* Opens the quick edit for this group (lote 64): registering the PO
+                          and its date is what takes these items off the list, and it was
+                          the one reason left to leave the board from here. */}
+                      <td style={td}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title={`${g.count} item${g.count === 1 ? '' : 's'} — register the PO # and PO date without leaving the board`}
+                          onClick={(e) => { e.stopPropagation(); openBuyByEdit(`${g.projectName} · ${g.wpLabel}`, due.filter((x) => x.pkg.id === g.wpId)); }}
+                          style={{ padding: '2px 9px', font: 'var(--text-mono)', fontWeight: 700 }}
+                        >
+                          {g.count}
+                        </Button>
+                      </td>
                       <td style={buyByCell(g.overdue)}>{rangeText(g.nearest, g.latest)}</td>
                       <td style={tdL}><StatusBadge status={g.status} /></td>
                       <td style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>›</td>
@@ -1598,7 +1841,17 @@ export function OverviewScreen() {
                     >
                       <td style={tdL}>{g.projectName}</td>
                       <td style={td}>{g.packages}</td>
-                      <td style={{ ...td, fontWeight: 600 }}>{g.count}</td>
+                      <td style={td}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title={`${g.count} item${g.count === 1 ? '' : 's'} — register the PO # and PO date without leaving the board`}
+                          onClick={(e) => { e.stopPropagation(); openBuyByEdit(g.projectName, due.filter((x) => x.projectId === g.projectId)); }}
+                          style={{ padding: '2px 9px', font: 'var(--text-mono)', fontWeight: 700 }}
+                        >
+                          {g.count}
+                        </Button>
+                      </td>
                       <td style={buyByCell(g.overdue)}>{rangeText(g.nearest, g.latest)}</td>
                       <td style={tdL}><StatusBadge status={g.status} /></td>
                       <td style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>›</td>
@@ -1651,12 +1904,14 @@ export function OverviewScreen() {
                       >
                         <td style={tdL}>{p.project.name}{empty && <span style={{ font: 'var(--text-caption)', color: 'var(--warn-ink)', fontWeight: 600, marginLeft: 8 }}>⚠ no items yet</span>}</td>
                         <td style={{ ...tdN, fontWeight: 600 }}>{p.items}</td>
-                        <td style={{ ...tdN, background: p.orderNow ? 'var(--status-order-now)' : undefined, color: p.orderNow ? 'var(--status-order-now-ink)' : 'var(--muted)', fontWeight: p.orderNow ? 600 : 400 }}>{p.orderNow}</td>
-                        <td style={{ ...tdN, background: p.soon ? 'var(--status-order-soon)' : undefined, color: p.soon ? 'var(--status-order-soon-ink)' : 'var(--muted)' }}>{p.soon}</td>
-                        <td style={{ ...tdN, background: p.needs ? 'var(--status-needs-data)' : undefined, color: p.needs ? 'var(--status-needs-data-ink)' : 'var(--muted)' }}>{p.needs}</td>
-                        <td style={{ ...tdN, color: 'var(--muted)' }}>{p.planned}</td>
-                        <td style={{ ...tdN, color: p.ordered ? 'var(--status-ordered-ink)' : 'var(--muted)' }}>{p.ordered}</td>
-                        <td style={{ ...tdN, background: p.partial ? 'var(--status-partial)' : undefined, color: p.partial ? 'var(--status-partial-ink)' : 'var(--muted)' }}>{p.partial}</td>
+                        {/* The six counts are buttons (lote 64): they open the quick edit
+                            for those items. */}
+                        {countCell(p, p.orderNow, 'order-now', 'ORDER NOW', { ...tdN, background: p.orderNow ? 'var(--status-order-now)' : undefined, color: p.orderNow ? 'var(--status-order-now-ink)' : 'var(--muted)', fontWeight: p.orderNow ? 600 : 400 })}
+                        {countCell(p, p.soon, 'order-soon', 'Order soon', { ...tdN, background: p.soon ? 'var(--status-order-soon)' : undefined, color: p.soon ? 'var(--status-order-soon-ink)' : 'var(--muted)' })}
+                        {countCell(p, p.needs, 'needs-data', 'Needs data', { ...tdN, background: p.needs ? 'var(--status-needs-data)' : undefined, color: p.needs ? 'var(--status-needs-data-ink)' : 'var(--muted)' })}
+                        {countCell(p, p.planned, 'planned', 'Planned', { ...tdN, color: 'var(--muted)' })}
+                        {countCell(p, p.ordered, 'ordered', 'Ordered', { ...tdN, color: p.ordered ? 'var(--status-ordered-ink)' : 'var(--muted)' })}
+                        {countCell(p, p.partial, 'partial', 'Partial', { ...tdN, background: p.partial ? 'var(--status-partial)' : undefined, color: p.partial ? 'var(--status-partial-ink)' : 'var(--muted)' })}
                         <td style={{ ...tdL }}>
                           <InstallBar
                             closed={p.closed}
@@ -1681,19 +1936,21 @@ export function OverviewScreen() {
       {drillCard && badgeDrill && (
         <BadgeDrillModal card={drillCard} badge={badgeDrill.key} onClose={() => setBadgeDrill(null)} onJumpItem={jumpToItem} />
       )}
+      {/* `dismissClockModal` guards against the window behind a date prompt closing along
+          with it — both listen for Escape on `document`. */}
       {showLate && (
         <LateDeliveriesModal
           rows={lateRows}
-          onClose={() => setShowLate(false)}
+          onClose={dismissClockModal(() => setShowLate(false))}
           onJumpItem={jumpToItem}
           onReschedule={applyReschedule}
-          onConfirmArrived={confirmArrived}
+          onMove={moveLateItem}
         />
       )}
       {showPartial && (
         <PartialDeliveryModal
           rows={partialRows}
-          onClose={() => setShowPartial(false)}
+          onClose={dismissClockModal(() => setShowPartial(false))}
           onJumpItem={jumpToItem}
           onCloseBackorder={closeBackorder}
         />
@@ -1701,9 +1958,47 @@ export function OverviewScreen() {
       {showAwaiting && (
         <AwaitingCloseModal
           rows={awaiting}
-          onClose={() => setShowAwaiting(false)}
+          onClose={dismissClockModal(() => setShowAwaiting(false))}
           onJumpItem={jumpToItem}
           onCloseItem={closeAwaitingItem}
+        />
+      )}
+
+      {/* The mosaic's package window (lote 64) and the quick edit — mounted only while
+          open, same as the three above. */}
+      {pkgModalPkg && pkgModal && (
+        <PackageCloseOutModal
+          projectName={db.projects.find((p) => p.id === pkgModal.projectId)?.name ?? ''}
+          wpLabel={pkgModalPkg.label}
+          supplyOnly={pkgModalSupplyOnly}
+          rows={pkgRows}
+          onClose={() => { if (!datePrompt) setPkgModal(null); }}
+          onJumpItem={(itemId) => jumpToItem(pkgModal.projectId, itemId)}
+          onJumpPackage={() => { setPkgModal(null); jumpToItem(pkgModal.projectId, pkgRows[0]?.itemId ?? ''); }}
+          onMove={movePkgItem}
+        />
+      )}
+      {quickEdit && (
+        <ItemQuickEditModal
+          title={quickEdit.title}
+          caption={quickEdit.caption}
+          rows={quickRows}
+          onClose={() => setQuickEdit(null)}
+          onJumpItem={(itemId) => {
+            const row = quickRows.find((r) => r.itemId === itemId);
+            const pid = row ? db.packages.find((p) => p.id === row.wpId)?.projectId : undefined;
+            if (pid) jumpToItem(pid, itemId);
+          }}
+          onSave={saveQuickEdit}
+        />
+      )}
+
+      {/* Last in the tree on purpose: it shares its z-index with the other board modals,
+          so DOM order is what keeps it on top. */}
+      {datePrompt && (
+        <ConfirmDateModal
+          prompt={{ ...datePrompt, onConfirm: (iso) => { setDatePrompt(null); datePrompt.onConfirm(iso); } }}
+          onCancel={() => setDatePrompt(null)}
         />
       )}
     </div>

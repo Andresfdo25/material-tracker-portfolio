@@ -429,13 +429,36 @@
   filter: brightness(1.32);
 }
 
+/* El conteo de una celda del Portfolio (lote 64). Hereda `font` y `color` de la celda —que
+ * en la mitad de las columnas es la tinta de un pastel del semáforo— y por eso NO declara
+ * ninguno de los dos: el botón sigue siendo el número, no una cajita encima. El contorno de
+ * currentColor es lo único que aparece al pasar por encima. */
+.ov-count {
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 110ms ease, background 110ms ease;
+}
+.ov-count:hover {
+  border-color: currentColor;
+}
+.ov-count:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: -1px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .btn,
   .icon-btn,
   .chip-btn,
   .ov-gauge,
   .swatch-btn,
-  .menu-item {
+  .menu-item,
+  .ov-count {
     transition: none;
   }
   .btn:hover,

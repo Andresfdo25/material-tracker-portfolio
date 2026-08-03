@@ -20,6 +20,7 @@
 import { Fragment, useState, type CSSProperties } from 'react';
 import { closeVia, daysWaiting, fmtMDY, itemStage, logDrivesStage, STAGE_META, totalQty } from '../store/logic';
 import type { ItemStage } from '../store/types';
+import { StageMoveButtons, type MoveTarget } from './StageMoveButtons';
 import { Button } from './ds/Button';
 import { Modal } from './ds/Modal';
 import { card, td, tdL, th, thL } from './ds/overviewTable';
@@ -28,12 +29,12 @@ import type { Enriched, LateRow } from '../screens/OverviewScreen';
 
 /* --------------------------------------------------------------- ⏰ Late deliveries */
 
-export function LateDeliveriesModal({ rows, onClose, onJumpItem, onReschedule, onConfirmArrived }: {
+export function LateDeliveriesModal({ rows, onClose, onJumpItem, onReschedule, onMove }: {
   rows: LateRow[];
   onClose: () => void;
   onJumpItem: (projectId: string, itemId: string) => void;
   onReschedule: (row: LateRow, iso: string) => void;
-  onConfirmArrived: (row: LateRow) => void;
+  onMove: (row: LateRow, target: MoveTarget) => void;
 }) {
   const [group, setGroup] = useState<'wp' | 'project'>('wp');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -55,7 +56,7 @@ export function LateDeliveriesModal({ rows, onClose, onJumpItem, onReschedule, o
   return (
     <Modal title={<span>⏰ {rows.length} late deliver{rows.length === 1 ? 'y' : 'ies'}</span>} onClose={onClose} width={800}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, font: 'var(--text-caption)', color: 'var(--muted)' }}>
-        <span>Past its promised date · 🗓 sets a new promise · ✅ confirms it arrived. Either publishes the package — no second save needed.</span>
+        <span>Past its promised date · 🗓 sets a new promise; the stage buttons say where it actually ended up. Any of them publishes the package — no second save needed.</span>
         <span style={{ flex: 1 }} />
         <span style={{ fontWeight: 600 }}>Group by:</span>
         {(['wp', 'project'] as const).map((m) => (
@@ -70,7 +71,7 @@ export function LateDeliveriesModal({ rows, onClose, onJumpItem, onReschedule, o
             <tr style={{ background: 'var(--surface-soft)' }}>
               {group === 'wp' && <th style={thL}>Work package</th>}
               <th style={thL}>Item</th><th style={thL}>Promised</th>
-              <th style={th}>Days late</th><th style={{ ...th, width: 78 }}>Resolve</th>
+              <th style={th}>Days late</th><th style={{ ...thL, width: 236 }}>Resolve</th>
             </tr>
           </thead>
           <tbody>
@@ -113,17 +114,15 @@ export function LateDeliveriesModal({ rows, onClose, onJumpItem, onReschedule, o
                           ) : (
                             <>
                               <Button size="sm" variant="secondary" style={iconBtn} title="Reschedule" onClick={() => setEditing({ id: r.itemId, date: r.promised })}>🗓</Button>
-                              <Button
-                                size="sm" variant="secondary" disabled={!!r.blocked} style={iconBtn}
-                                title={r.blocked === 'log'
-                                  ? 'This item follows its delivery log — register the arrival in Breakdown Delivery from the Material List.'
-                                  : r.blocked === 'partial'
-                                    ? 'Part of this order is already here — register the rest by quantity in Breakdown Delivery from the Material List.'
-                                    : 'It arrived — mark it received into 🏭 the warehouse, stamped today'}
-                                onClick={() => onConfirmArrived(r)}
-                              >
-                                ✅
-                              </Button>
+                              {/* Same three-way stage group the mosaic offers — a truck that
+                                  shows up weeks late often unloads straight at the jobsite. */}
+                              <StageMoveButtons
+                                moves={r.moves}
+                                stage={r.stage}
+                                supplyOnly={r.supplyOnly}
+                                label={r.description}
+                                onMove={(target) => onMove(r, target)}
+                              />
                             </>
                           )}
                         </span>

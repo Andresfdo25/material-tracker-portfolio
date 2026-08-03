@@ -22,6 +22,14 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { MOSAIC_BADGE_META, type MosaicBadgeKey, type MosaicCard, type MosaicPackage, type PackageProgressFlag } from '../store/logic';
 
+/** Soft cap on cards per row (ported from the private build's lote 64) — a PM realistically
+ * runs a portfolio of a handful to twenty projects, so more ROWS reads better than
+ * squeezing more, thinner columns into fewer rows. */
+const MAX_COLS = 5;
+/** Below this width a card stops being legible — the cap yields to it. */
+const CARD_FLOOR = 226;
+const GRID_GAP = 14;
+
 /** The six identity hues, in slot order — `MOSAIC_SLOTS` in logic.ts must stay this long. */
 const SLOTS = [
   { solid: 'var(--mos-blue)', soft: 'var(--mos-blue-soft)', ink: 'var(--mos-blue-ink)' },
@@ -52,7 +60,7 @@ function listTip(items: { description: string }[], label: string): string {
   return [`${items.length} ${label}:`, ...head, ...(rest > 0 ? [`…+${rest} more`] : []), '', 'Click for the full list'].join('\n');
 }
 
-function PackageBar({ pkg, slot, scope, widest, trackW, trackRef, onOpen }: {
+function PackageBar({ pkg, slot, scope, widest, trackW, trackRef, onOpen, openHint }: {
   pkg: MosaicPackage;
   slot: typeof SLOTS[number];
   scope: MosaicCard['scope'];
@@ -60,6 +68,7 @@ function PackageBar({ pkg, slot, scope, widest, trackW, trackRef, onOpen }: {
   trackW: number;
   trackRef?: React.Ref<HTMLSpanElement>;
   onOpen: () => void;
+  openHint: string;
 }) {
   const share = widest ? pkg.total / widest : 1;
   // Two zones when we install (closed / everything else) and THREE when we only supply:
@@ -90,7 +99,7 @@ function PackageBar({ pkg, slot, scope, widest, trackW, trackRef, onOpen }: {
       type="button"
       className="mos-row"
       onClick={onOpen}
-      title={`${pkg.wpLabel}\n${counts}${pkg.inHand ? `\n${pkg.inHand} received so far` : ''}\n\nClick to open this package in the Material List`}
+      title={`${pkg.wpLabel}\n${counts}${pkg.inHand ? `\n${pkg.inHand} received so far` : ''}\n\n${openHint}`}
     >
       <span className="mos-row-name">
         <span className="mos-row-label">{pkg.wpLabel}</span>
@@ -135,10 +144,10 @@ function PackageBar({ pkg, slot, scope, widest, trackW, trackRef, onOpen }: {
   );
 }
 
-function ProjectCard({ card, onJumpProject, onJumpItem, onBadgeDrill }: {
+function ProjectCard({ card, onJumpProject, onOpenPackage, onBadgeDrill }: {
   card: MosaicCard;
   onJumpProject: (projectId: string) => void;
-  onJumpItem: (projectId: string, itemId: string) => void;
+  onOpenPackage: (projectId: string, wpId: string) => void;
   onBadgeDrill: (projectId: string, key: MosaicBadgeKey) => void;
 }) {
   // One measurement per card: every row's track is the same width, so the first one
@@ -183,7 +192,8 @@ function ProjectCard({ card, onJumpProject, onJumpItem, onBadgeDrill }: {
             widest={card.widest}
             trackW={trackW}
             trackRef={i === 0 ? trackRef : undefined}
-            onOpen={() => onJumpItem(card.projectId, pkg.itemId)}
+            openHint="Click to open this package — move items along without leaving the board"
+            onOpen={() => onOpenPackage(card.projectId, pkg.wpId)}
           />
         ))}
       </div>
@@ -212,13 +222,32 @@ function ProjectCard({ card, onJumpProject, onJumpItem, onBadgeDrill }: {
   );
 }
 
-export function InstallMosaic({ cards, empty, onJumpProject, onJumpItem, onBadgeDrill }: {
+export function InstallMosaic({ cards, empty, onJumpProject, onOpenPackage, onBadgeDrill }: {
   cards: MosaicCard[];
   empty: string;
   onJumpProject: (projectId: string) => void;
-  onJumpItem: (projectId: string, itemId: string) => void;
+  onOpenPackage: (projectId: string, wpId: string) => void;
   onBadgeDrill: (projectId: string, key: MosaicBadgeKey) => void;
 }) {
+  // Measured in real pixels, not `auto-fit`: `auto-fit` packs as many cards as fit at its
+  // minimum width and knows nothing about a column CAP, so a wide panel put six or seven
+  // thin cards on one row. Hooks go before the empty-list return, so they never change
+  // order between renders.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [wrapW, setWrapW] = useState(0);
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    setWrapW(el.offsetWidth);
+    const ro = new ResizeObserver(([e]) => setWrapW(e.contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const colsAt = (min: number) => Math.max(1, Math.floor((wrapW + GRID_GAP) / (min + GRID_GAP)));
+  // Up to five, and only while cards stay above the legibility floor. Never more columns
+  // than cards — four projects in a five-wide grid would leave a hole.
+  const cols = wrapW === 0 ? 0 : Math.min(MAX_COLS, cards.length, colsAt(CARD_FLOOR));
+
   if (cards.length === 0) {
     return (
       <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', background: 'var(--canvas)', padding: '22px 16px', textAlign: 'center', font: 'var(--text-body)', color: 'var(--muted)' }}>
@@ -227,16 +256,22 @@ export function InstallMosaic({ cards, empty, onJumpProject, onJumpItem, onBadge
     );
   }
   return (
-    // auto-fit + minmax: one column on a phone, as many as fit on the board. Ragged
-    // bottoms are fine — forcing equal heights would stretch a two-package card to match
-    // an eight-package one and turn the size difference into whitespace.
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, alignItems: 'start' }}>
+    // Ragged bottoms are fine — forcing equal heights would stretch a two-package card to
+    // match an eight-package one and turn the size difference into whitespace.
+    <div
+      ref={wrapRef}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: cols ? `repeat(${cols}, minmax(0, 1fr))` : 'repeat(auto-fit, minmax(226px, 1fr))',
+        gap: GRID_GAP, alignItems: 'start',
+      }}
+    >
       {cards.map((card) => (
         <ProjectCard
           key={card.projectId}
           card={card}
           onJumpProject={onJumpProject}
-          onJumpItem={onJumpItem}
+          onOpenPackage={onOpenPackage}
           onBadgeDrill={onBadgeDrill}
         />
       ))}
