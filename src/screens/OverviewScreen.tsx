@@ -3,7 +3,7 @@
 // by project → work package with item counts. All read published report snapshots.
 import { Fragment, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useApp } from '../store/useApp';
-import { awaitingInstall, backorderQty, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMDY, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, parseISO, pendingInstallQty, projectClosesAtSite, stageMoves, submittalBlockers, today, totalQty, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type StageMoves, type WaitSeverity } from '../store/logic';
+import { awaitingInstall, backorderQty, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMDY, groupByPackage, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, parseISO, pendingInstallQty, projectClosesAtSite, stageMoves, submittalBlockers, today, totalQty, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type StageMoves, type WaitSeverity } from '../store/logic';
 import type { ComputedItem, ItemStage, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
 import { StatusBadge } from '../components/ds/StatusBadge';
 import { Button } from '../components/ds/Button';
@@ -387,6 +387,12 @@ function BadgeDrillModal({ card, badge, onClose, onJumpItem }: {
   // The note column only exists where a badge fills it (what is still owed, which way the
   // material travelled) — an empty column on the other four would be furniture.
   const hasNote = rows.some((x) => x.note);
+  // Grouped by package rather than a flat list: the list is an entire project, and the
+  // package label — which repeated identically down a column of its own — is exactly where
+  // the PM splits the work. Same decision, same helper as the quick edit, so the two
+  // windows can't order things differently.
+  const groups = groupByPackage(rows);
+  const cols = 3 + (hasNote ? 1 : 0);
   return (
     <Modal
       title={<span>{card.projectName} · {meta.icon} {rows.length} {meta.label}</span>}
@@ -401,31 +407,44 @@ function BadgeDrillModal({ card, badge, onClose, onJumpItem }: {
           <thead>
             <tr style={{ background: 'var(--surface-soft)' }}>
               <th style={{ ...thD, textAlign: 'left' }}>Description</th>
-              <th style={{ ...thD, textAlign: 'left' }}>Work package</th>
               <th style={thD}>Qty</th>
               <th style={{ ...thD, textAlign: 'left' }}>{meta.column}</th>
               {hasNote && <th style={{ ...thD, textAlign: 'left' }}>Detail</th>}
             </tr>
           </thead>
-          <tbody>
-            {rows.map((x) => (
-              <tr
-                key={x.id}
-                onClick={() => { onClose(); onJumpItem(card.projectId, x.id); }}
-                style={{ cursor: 'pointer' }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              >
-                <td style={{ ...tdD, textAlign: 'left', font: 'var(--text-body)' }}>{x.description || <span style={{ color: 'var(--muted)' }}>Untitled</span>}</td>
-                <td style={{ ...tdD, textAlign: 'left', font: 'var(--text-body)', color: 'var(--muted)' }}>{x.wpLabel}</td>
-                <td style={{ ...tdD, whiteSpace: 'nowrap' }}>{x.qty === '' || x.qty == null ? '—' : `${x.qty}${x.um ? ` ${x.um}` : ''}`}</td>
-                <td style={{ ...tdD, textAlign: 'left', whiteSpace: 'nowrap' }}>
-                  {x.date ? fmtMDY(x.date) : <span style={{ color: 'var(--muted)' }}>no date</span>}
-                </td>
-                {hasNote && <td style={{ ...tdD, textAlign: 'left', font: 'var(--text-body)', color: 'var(--muted)' }}>{x.note || '—'}</td>}
+          {groups.map((g, gi) => (
+            <tbody key={g.wpId}>
+              <tr>
+                <th
+                  colSpan={cols}
+                  scope="colgroup"
+                  style={{
+                    ...thD, textAlign: 'left', color: 'var(--title)', fontWeight: 700,
+                    background: 'var(--surface-soft)',
+                    borderTop: gi > 0 ? '1px solid var(--hairline)' : undefined,
+                  }}
+                >
+                  {g.wpLabel} · {g.rows.length} item{g.rows.length === 1 ? '' : 's'}
+                </th>
               </tr>
-            ))}
-          </tbody>
+              {g.rows.map((x) => (
+                <tr
+                  key={x.id}
+                  onClick={() => { onClose(); onJumpItem(card.projectId, x.id); }}
+                  style={{ cursor: 'pointer' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <td style={{ ...tdD, textAlign: 'left', font: 'var(--text-body)' }}>{x.description || <span style={{ color: 'var(--muted)' }}>Untitled</span>}</td>
+                  <td style={{ ...tdD, whiteSpace: 'nowrap' }}>{x.qty === '' || x.qty == null ? '—' : `${x.qty}${x.um ? ` ${x.um}` : ''}`}</td>
+                  <td style={{ ...tdD, textAlign: 'left', whiteSpace: 'nowrap' }}>
+                    {x.date ? fmtMDY(x.date) : <span style={{ color: 'var(--muted)' }}>no date</span>}
+                  </td>
+                  {hasNote && <td style={{ ...tdD, textAlign: 'left', font: 'var(--text-body)', color: 'var(--muted)' }}>{x.note || '—'}</td>}
+                </tr>
+              ))}
+            </tbody>
+          ))}
         </table>
       </div>
     </Modal>
@@ -1544,6 +1563,23 @@ export function OverviewScreen() {
       variant: 'full',
     });
   };
+  /** A mosaic badge. The three physical ones still open the read-only drill-down; **🛒 opens
+   * the quick edit in the `'po'` variant** instead — the badge counts exactly what's missing
+   * a PO, so the window that lists it has to be able to write one. Lead and On-Site aren't
+   * offered here: an unbought item may not have them yet, and the question this badge asks
+   * is the order, not the schedule. Publishes on save, like every Overview write. */
+  const openBadge = (projectId: string, key: MosaicBadgeKey) => {
+    if (key !== 'not-ordered') { setBadgeDrill({ projectId, key }); return; }
+    const card = mosaic.find((c) => c.projectId === projectId);
+    const items = card?.badges.find((b) => b.key === key)?.items ?? [];
+    if (!card || !items.length) return;
+    setQuickEdit({
+      title: `${card.projectName} · 🛒 ${items.length} with no PO# yet`,
+      caption: `${items.length} item${items.length === 1 ? '' : 's'} nobody has bought yet, by work package. Already ordered? Write the PO # and its date here.`,
+      ids: items.map((x) => x.id),
+      variant: 'po',
+    });
+  };
   /** The Buy-By table's count, the other half of the same request: register the PO and
    * its date without leaving the board. Same window, different trigger — and in the `'po'`
    * variant, because an item that already has a buy-by has Lead and On-Site loaded by
@@ -1768,7 +1804,7 @@ export function OverviewScreen() {
                 empty="No work packages with items yet — the mosaic fills in as material is added and published."
                 onJumpProject={jumpProject}
                 onOpenPackage={(projectId, wpId) => setPkgModal({ projectId, wpId })}
-                onBadgeDrill={(projectId, key) => setBadgeDrill({ projectId, key })}
+                onBadgeDrill={openBadge}
               />
             ) : (
               <StageTable

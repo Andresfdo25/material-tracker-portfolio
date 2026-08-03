@@ -52,12 +52,17 @@ const BAR_H = 22;
 const PCT_W = 40; // the % column: fixed, so the numbers line up under each other even
                   // though the bars beside them are deliberately ragged
 
-/** Up to five descriptions, then a count — the badge tooltip. */
-function listTip(items: { description: string }[], label: string): string {
+/** Up to five descriptions, then a count — the badge tooltip. The last line says what the
+ * click does, and 🛒 does something else: it opens the list ready to be written on, so
+ * promising "the full list" there would undersell the one badge that acts. */
+function listTip(items: { description: string }[], label: string, key: MosaicBadgeKey): string {
   if (!items.length) return `Nothing ${label}`;
   const head = items.slice(0, 5).map((x) => `· ${x.description || 'Untitled'}`);
   const rest = items.length - head.length;
-  return [`${items.length} ${label}:`, ...head, ...(rest > 0 ? [`…+${rest} more`] : []), '', 'Click for the full list'].join('\n');
+  const action = key === 'not-ordered'
+    ? 'Click to list them by work package and fill in PO # / PO Date'
+    : 'Click for the full list, by work package';
+  return [`${items.length} ${label}:`, ...head, ...(rest > 0 ? [`…+${rest} more`] : []), '', action].join('\n');
 }
 
 function PackageBar({ pkg, slot, scope, widest, trackW, trackRef, onOpen, openHint }: {
@@ -207,7 +212,7 @@ function ProjectCard({ card, onJumpProject, onOpenPackage, onBadgeDrill }: {
                 type="button"
                 className="mos-badge"
                 disabled={items.length === 0}
-                title={listTip(items, meta.label)}
+                title={listTip(items, meta.label, key)}
                 aria-label={`${items.length} ${meta.label} — ${card.projectName}`}
                 onClick={() => onBadgeDrill(card.projectId, key)}
               >

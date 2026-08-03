@@ -10,11 +10,12 @@
 // editor, it's the minimum that lets the board stop asking.
 //
 // **The trigger picks which of those fields show, via `variant`.** From Buy-By the window
-// opens in `'po'`: Work package · Item · Qty · PO # · PO Date · Status — a Buy-By item
-// already has Lead and On-Site loaded by definition (without them `computeItem` couldn't
-// derive a buy-by, and the item would be in Needs data instead), so those two columns plus
-// the derived Buy-By one only repeated what the table behind it already says. The Portfolio
-// counts keep opening `'full'`, which is where Lead and On-Site are exactly what's missing.
+// opens in `'po'`: Item · Qty · PO # · PO Date · Status and nothing else, under the package
+// label heading each group. A Buy-By item already has Lead and On-Site loaded by definition
+// (without them `computeItem` couldn't derive a buy-by, and the item would be in Needs data
+// instead), so those two columns plus the derived Buy-By one only repeated what the table
+// behind it already says. The Portfolio counts keep opening `'full'`, which is where Lead
+// and On-Site are exactly what's missing.
 //
 // Three rules that matter if this gets touched again:
 //   · Values come off the LIVE DRAFT, not the report. They are what the fields are about
@@ -25,7 +26,7 @@
 //   · The publish notice sits next to the button, not in a `window.confirm` on top of it:
 //     the button says how many items and what it publishes, and that IS the confirmation.
 import { useMemo, useState, type CSSProperties } from 'react';
-import { addDays, fmtMDY, parseISO, toISO, today } from '../store/logic';
+import { addDays, fmtMDY, groupByPackage, parseISO, toISO, today } from '../store/logic';
 import type { MaterialItem } from '../store/types';
 import { Button } from './ds/Button';
 import { Modal } from './ds/Modal';
@@ -84,6 +85,15 @@ function previewBuyBy(lead: number | string, onsite: string): string {
  *  `'po'`  — PO and its date only (the Buy-By path). See the file comment above. */
 export type QuickEditVariant = 'full' | 'po';
 
+/** The package label stopped being a COLUMN and became a group heading. With the window
+ * opened from a mosaic badge the rows can be an entire project — a dozen packages in a flat
+ * list — and the label repeated identically down the widest column of the table, the same
+ * one already competing for room with the inputs. Grouping says it once and orders the
+ * window the way orders actually go out: one PO per package. */
+const groupTh: CSSProperties = {
+  ...th, textAlign: 'left', fontWeight: 700, background: 'var(--surface-soft)',
+};
+
 export function ItemQuickEditModal({ title, caption, rows, variant = 'full', onClose, onJumpItem, onSave }: {
   title: string;
   caption: string;
@@ -100,24 +110,33 @@ export function ItemQuickEditModal({ title, caption, rows, variant = 'full', onC
   const valueOf = <K extends keyof QuickEditPatch>(r: QuickEditRow, k: K): QuickEditPatch[K] =>
     (edits[r.itemId]?.[k] ?? r[k]) as QuickEditPatch[K];
 
-  // ---- Fill all ----
+  // ---- Fill all, PER PACKAGE ----
   // A PO almost always covers the WHOLE package: the window opens with a dozen items that
   // are going to carry the same PO # and date, and typing them one by one was the work the
-  // window came to save. The bulk row writes into `edits` of every row — not a separate
+  // window came to save. The bulk row writes into `edits` of the rows — not a separate
   // state — so what gets filled in bulk can be corrected afterward row by row, and the rest
   // of the window (the touched highlight, the Save button's count, discarding what stayed
   // the same) keeps working without knowing it exists.
-  const [bulk, setBulk] = useState<Partial<QuickEditPatch>>({});
-  const fillAll = <K extends keyof QuickEditPatch>(k: K, v: QuickEditPatch[K]) => {
-    setBulk((b) => ({ ...b, [k]: v }));
+  //
+  // **The scope is the package, not the window**, now that the list can be an entire
+  // project: a PO is issued per package, so a window-wide fill would write the same number
+  // across orders that belong to different vendors — and the mistake would only show up
+  // later, in the Material List. So `bulk` is indexed by `wpId` and the row lives INSIDE its
+  // group, under its heading: the scope is read from position, not a caption. With a single
+  // package open (the Buy-By path) the behaviour is exactly what it was before.
+  const [bulk, setBulk] = useState<Record<string, Partial<QuickEditPatch>>>({});
+  const fillGroup = <K extends keyof QuickEditPatch>(g: { wpId: string; rows: QuickEditRow[] }, k: K, v: QuickEditPatch[K]) => {
+    setBulk((b) => ({ ...b, [g.wpId]: { ...b[g.wpId], [k]: v } }));
     setEdits((e) => {
       const next = { ...e };
-      rows.forEach((r) => { next[r.itemId] = { ...next[r.itemId], [k]: v }; });
+      g.rows.forEach((r) => { next[r.itemId] = { ...next[r.itemId], [k]: v }; });
       return next;
     });
   };
-  /** Undoes the whole window, not just the bulk row: it's the way out of a wrong bulk fill,
-   * which is exactly the risk bulk introduces. */
+  /** Undoes the whole window, not just one group's bulk row: it's the way out of a wrong
+   * bulk fill, which is exactly the risk bulk introduces. Sits in the footer, next to
+   * Cancel, not inside a group row: with several packages loaded, a Reset beside every
+   * group's inputs is too easy to hit by mistake. */
   const resetAll = () => { setBulk({}); setEdits({}); };
 
   const changes = useMemo(() => rows
@@ -132,8 +151,11 @@ export function ItemQuickEditModal({ title, caption, rows, variant = 'full', onC
     })
     .filter((c): c is { itemId: string; wpId: string; patch: Partial<QuickEditPatch> } => c !== null), [rows, edits]);
   const pkgCount = new Set(changes.map((c) => c.wpId)).size;
-  // With the Fill all row underneath, the heavy rule moves to belong to IT: two heavy rules
-  // in a row read as two tables.
+  const groups = useMemo(() => groupByPackage(rows), [rows]);
+  /** How many columns a row spans — the group heading and the empty row both need it. */
+  const colCount = full ? 9 : 6;
+  // With the first package's heading underneath, the heavy rule moves to belong to IT: two
+  // heavy rules in a row read as two tables.
   const hTh: CSSProperties = rows.length ? { ...th, borderBottom: '1px solid var(--hairline)' } : th;
 
   return (
@@ -142,19 +164,17 @@ export function ItemQuickEditModal({ title, caption, rows, variant = 'full', onC
     // seven.
     <Modal title={title} onClose={onClose} width={full ? 1160 : 1000}>
       <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', marginBottom: 10 }}>
-        {caption} Fill in what you know and hit save — no trip to the Material List. The{' '}
-        <strong>⤓ Fill all</strong> row writes down every row at once; correct the exceptions below it.
-        Click a row's <strong>›</strong> to open it there instead.
+        {caption} Fill in what you know and hit save — no trip to the Material List. Each work
+        package has its own <strong>⤓ Fill all</strong> row: it writes down that package at once —
+        one PO, one package — and you correct the exceptions below it. Click a row's{' '}
+        <strong>›</strong> to open it there instead.
       </div>
       <div style={{ ...card, overflow: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: 'var(--surface-soft)' }}>
-              {/* The order comes from the variant: in `'po'` the package leads, which is how
-                  the PM groups the orders they're about to place. */}
-              {!full && <th style={{ ...hTh, textAlign: 'left' }}>Work package</th>}
+              {/* No work-package column: each group's heading says it instead (`groupTh`). */}
               <th style={{ ...hTh, textAlign: 'left' }}>Item</th>
-              {full && <th style={{ ...hTh, textAlign: 'left' }}>Work package</th>}
               <th style={{ ...hTh, textAlign: 'right' }}>Qty</th>
               {full && <th style={{ ...hTh, textAlign: 'left' }} title="Lead time in weeks — how long the vendor takes from PO to delivery">Lead (wks)</th>}
               {full && <th style={{ ...hTh, textAlign: 'left' }}>On-Site Req.</th>}
@@ -164,129 +184,130 @@ export function ItemQuickEditModal({ title, caption, rows, variant = 'full', onC
               <th style={{ ...hTh, textAlign: 'left' }}>Status</th>
               <th style={{ ...hTh, width: 26 }} />
             </tr>
-            {/* Fill all — same columns, one row up: what's written here lands on every row
-                below, which is where the exception gets corrected. */}
-            {rows.length > 0 && (
-              <tr style={{ background: 'var(--surface-soft)' }}>
-                <th style={{ ...bulkTh, color: 'var(--muted)', font: 'var(--text-caption)', fontWeight: 700 }} colSpan={3}>
-                  ⤓ Fill all {rows.length} row{rows.length === 1 ? '' : 's'}
-                </th>
-                {full && (
-                  <th style={bulkTh}>
-                    <input
-                      type="number" min={0} step={1} placeholder="wks"
-                      value={bulk.lead == null || bulk.lead === '' ? '' : String(bulk.lead)}
-                      onChange={(e) => fillAll('lead', e.target.value === '' ? '' : Number(e.target.value))}
-                      style={{ ...field, width: 64, textAlign: 'right' }}
-                    />
-                  </th>
-                )}
-                {full && (
-                  <th style={bulkTh}>
-                    <input type="date" value={bulk.onsite ?? ''} onChange={(e) => fillAll('onsite', e.target.value)} style={{ ...field, width: 132 }} />
-                  </th>
-                )}
-                {full && <th style={bulkTh} />}
-                <th style={bulkTh}>
-                  <input
-                    type="text" placeholder="PO #" value={bulk.po ?? ''}
-                    onChange={(e) => fillAll('po', e.target.value)}
-                    style={{ ...field, width: 108 }}
-                  />
-                </th>
-                <th style={bulkTh}>
-                  <input type="date" value={bulk.poDate ?? ''} onChange={(e) => fillAll('poDate', e.target.value)} style={{ ...field, width: 132 }} />
-                </th>
-                <th style={bulkTh} colSpan={2}>
-                  <button
-                    type="button"
-                    className="btn btn--ghost"
-                    disabled={changes.length === 0}
-                    onClick={resetAll}
-                    style={{ font: 'var(--text-caption)', padding: '3px 8px' }}
-                  >
-                    Reset
-                  </button>
-                </th>
-              </tr>
-            )}
           </thead>
-          <tbody>
-            {rows.map((r) => {
-              const lead = valueOf(r, 'lead');
-              const onsite = valueOf(r, 'onsite');
-              const buyby = previewBuyBy(lead, onsite);
-              const touched = changes.some((c) => c.itemId === r.itemId);
-              const wpCell = (
-                <td style={{ ...td, textAlign: 'left', color: 'var(--muted)', font: 'var(--text-caption)' }} title={r.wpLabel}>
-                  <div style={clampText(full ? 150 : 190, full ? 108 : 150)}>{r.wpLabel}</div>
-                </td>
-              );
-              return (
-                <tr key={r.key} style={{ background: touched ? 'var(--surface-soft)' : undefined }}>
-                  {!full && wpCell}
-                  <td style={{ ...td, textAlign: 'left' }} title={r.description}>
-                    <div style={clampText(full ? 195 : 220, full ? 158 : 180)}>
-                      {r.description || <span style={{ color: 'var(--muted)' }}>Untitled</span>}
-                    </div>
-                  </td>
-                  {full && wpCell}
-                  <td style={{ ...td, whiteSpace: 'nowrap' }}>
-                    {r.qty === '' || r.qty == null ? '—' : `${r.qty}${r.um ? ` ${r.um}` : ''}`}
+          {/* One `<tbody>` per package: the label heads its group instead of repeating on
+              every row, and its own ⤓ Fill all row sits right underneath. */}
+          {groups.map((g, gi) => {
+            const b = bulk[g.wpId] ?? {};
+            return (
+              <tbody key={g.wpId}>
+                <tr>
+                  <th
+                    colSpan={colCount}
+                    scope="colgroup"
+                    title={g.wpLabel}
+                    style={{ ...groupTh, borderTop: gi > 0 ? '1px solid var(--hairline)' : undefined }}
+                  >
+                    {g.wpLabel} · {g.rows.length} item{g.rows.length === 1 ? '' : 's'}
+                  </th>
+                </tr>
+                {/* Fill all — same columns, one row up from the rows it touches: what's
+                    written here lands on THIS package's rows, which is where the exception
+                    gets corrected. */}
+                <tr style={{ background: 'var(--surface-soft)' }}>
+                  <td style={{ ...bulkTh, color: 'var(--muted)', font: 'var(--text-caption)', fontWeight: 700 }} colSpan={2}>
+                    ⤓ Fill all {g.rows.length} row{g.rows.length === 1 ? '' : 's'} in this package
                   </td>
                   {full && (
-                    <td style={{ ...td, textAlign: 'left' }}>
+                    <td style={bulkTh}>
                       <input
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={lead === '' || lead == null ? '' : String(lead)}
-                        onChange={(e) => set(r.itemId, { lead: e.target.value === '' ? '' : Number(e.target.value) })}
+                        type="number" min={0} step={1} placeholder="wks"
+                        value={b.lead == null || b.lead === '' ? '' : String(b.lead)}
+                        onChange={(e) => fillGroup(g, 'lead', e.target.value === '' ? '' : Number(e.target.value))}
                         style={{ ...field, width: 64, textAlign: 'right' }}
                       />
                     </td>
                   )}
                   {full && (
-                    <td style={{ ...td, textAlign: 'left' }}>
-                      <input type="date" value={onsite} onChange={(e) => set(r.itemId, { onsite: e.target.value })} style={{ ...field, width: 132 }} />
+                    <td style={bulkTh}>
+                      <input type="date" value={b.onsite ?? ''} onChange={(e) => fillGroup(g, 'onsite', e.target.value)} style={{ ...field, width: 132 }} />
                     </td>
                   )}
-                  {full && (
-                    <td style={{ ...td, textAlign: 'left', font: 'var(--text-mono)', fontWeight: 600, whiteSpace: 'nowrap', color: buyby && buyby <= today() ? 'var(--alert-ink)' : 'var(--muted)' }}>
-                      {buyby ? fmtMDY(buyby) : '—'}
-                    </td>
-                  )}
-                  <td style={{ ...td, textAlign: 'left' }}>
+                  {full && <td style={bulkTh} />}
+                  <td style={bulkTh}>
                     <input
-                      type="text"
-                      value={String(valueOf(r, 'po') ?? '')}
-                      placeholder="PO #"
-                      onChange={(e) => set(r.itemId, { po: e.target.value })}
+                      type="text" placeholder="PO #" value={b.po ?? ''}
+                      onChange={(e) => fillGroup(g, 'po', e.target.value)}
                       style={{ ...field, width: 108 }}
                     />
                   </td>
-                  <td style={{ ...td, textAlign: 'left' }}>
-                    <input type="date" value={valueOf(r, 'poDate')} onChange={(e) => set(r.itemId, { poDate: e.target.value })} style={{ ...field, width: 132 }} />
+                  <td style={bulkTh}>
+                    <input type="date" value={b.poDate ?? ''} onChange={(e) => fillGroup(g, 'poDate', e.target.value)} style={{ ...field, width: 132 }} />
                   </td>
-                  <td style={{ ...td, textAlign: 'left' }}><StatusBadge status={r.status} /></td>
-                  <td style={{ ...td, textAlign: 'center', padding: '6px 4px' }}>
-                    <button
-                      type="button"
-                      title="Open this item in the Material List"
-                      aria-label={`Open ${r.description || 'item'} in the Material List`}
-                      onClick={() => { onClose(); onJumpItem(r.itemId); }}
-                      style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--muted)', font: 'var(--text-body)', padding: '2px 4px' }}
-                    >
-                      ›
-                    </button>
-                  </td>
+                  <td style={bulkTh} colSpan={2} />
                 </tr>
-              );
-            })}
-            {rows.length === 0 && (
-              <tr><td colSpan={full ? 10 : 7} style={{ ...td, textAlign: 'center', color: 'var(--muted)' }}>Nothing to fill in here.</td></tr>
-            )}
-          </tbody>
+                {g.rows.map((r) => {
+                  const lead = valueOf(r, 'lead');
+                  const onsite = valueOf(r, 'onsite');
+                  const buyby = previewBuyBy(lead, onsite);
+                  const touched = changes.some((c) => c.itemId === r.itemId);
+                  return (
+                    <tr key={r.key} style={{ background: touched ? 'var(--surface-soft)' : undefined }}>
+                      <td style={{ ...td, textAlign: 'left' }} title={r.description}>
+                        <div style={clampText(full ? 260 : 300, full ? 190 : 220)}>
+                          {r.description || <span style={{ color: 'var(--muted)' }}>Untitled</span>}
+                        </div>
+                      </td>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                        {r.qty === '' || r.qty == null ? '—' : `${r.qty}${r.um ? ` ${r.um}` : ''}`}
+                      </td>
+                      {full && (
+                        <td style={{ ...td, textAlign: 'left' }}>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={lead === '' || lead == null ? '' : String(lead)}
+                            onChange={(e) => set(r.itemId, { lead: e.target.value === '' ? '' : Number(e.target.value) })}
+                            style={{ ...field, width: 64, textAlign: 'right' }}
+                          />
+                        </td>
+                      )}
+                      {full && (
+                        <td style={{ ...td, textAlign: 'left' }}>
+                          <input type="date" value={onsite} onChange={(e) => set(r.itemId, { onsite: e.target.value })} style={{ ...field, width: 132 }} />
+                        </td>
+                      )}
+                      {full && (
+                        <td style={{ ...td, textAlign: 'left', font: 'var(--text-mono)', fontWeight: 600, whiteSpace: 'nowrap', color: buyby && buyby <= today() ? 'var(--alert-ink)' : 'var(--muted)' }}>
+                          {buyby ? fmtMDY(buyby) : '—'}
+                        </td>
+                      )}
+                      <td style={{ ...td, textAlign: 'left' }}>
+                        <input
+                          type="text"
+                          value={String(valueOf(r, 'po') ?? '')}
+                          placeholder="PO #"
+                          onChange={(e) => set(r.itemId, { po: e.target.value })}
+                          style={{ ...field, width: 108 }}
+                        />
+                      </td>
+                      <td style={{ ...td, textAlign: 'left' }}>
+                        <input type="date" value={valueOf(r, 'poDate')} onChange={(e) => set(r.itemId, { poDate: e.target.value })} style={{ ...field, width: 132 }} />
+                      </td>
+                      <td style={{ ...td, textAlign: 'left' }}><StatusBadge status={r.status} /></td>
+                      <td style={{ ...td, textAlign: 'center', padding: '6px 4px' }}>
+                        <button
+                          type="button"
+                          title="Open this item in the Material List"
+                          aria-label={`Open ${r.description || 'item'} in the Material List`}
+                          onClick={() => { onClose(); onJumpItem(r.itemId); }}
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--muted)', font: 'var(--text-body)', padding: '2px 4px' }}
+                        >
+                          ›
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            );
+          })}
+          {rows.length === 0 && (
+            <tbody>
+              <tr><td colSpan={colCount} style={{ ...td, textAlign: 'center', color: 'var(--muted)' }}>Nothing to fill in here.</td></tr>
+            </tbody>
+          )}
         </table>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
@@ -295,6 +316,7 @@ export function ItemQuickEditModal({ title, caption, rows, variant = 'full', onC
             ? 'Nothing changed yet.'
             : `Saving publishes ${pkgCount} work package${pkgCount === 1 ? '' : 's'} to the report — any other pending edits in ${pkgCount === 1 ? 'it' : 'them'} go too. Undo is available right after.`}
         </div>
+        <Button variant="secondary" size="sm" disabled={changes.length === 0} onClick={resetAll}>Reset all</Button>
         <Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
         <Button variant="primary" size="sm" disabled={changes.length === 0} onClick={() => onSave(changes)}>
           Save &amp; publish{changes.length ? ` · ${changes.length} item${changes.length === 1 ? '' : 's'}` : ''}

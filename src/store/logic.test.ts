@@ -1137,11 +1137,28 @@ describe('mosaicCards — the pure aggregation behind the Overview mosaic', () =
     expect(p.pending - p.ordered).toBe(1); // i3: unordered leftover
   });
 
-  it('badges: install scope tracks warehouse/on-site/installed; supply scope tracks not-ordered/backorder/detour', () => {
-    const installCards = mosaicCards([project()], [pkg()], [mi({ id: 'i1', delivered: true, receivedQty: 1, qty: 1 })]);
-    expect(installCards[0].badges.map((b) => b.key)).toEqual(['warehouse', 'on-site', 'installed']);
+  it('badges: install scope tracks not-ordered/warehouse/on-site/installed; supply scope tracks not-ordered/backorder/detour', () => {
+    const installCards = mosaicCards([project()], [pkg()], [mi({ id: 'i1', po: 'PO-1', delivered: true, receivedQty: 1, qty: 1 })]);
+    expect(installCards[0].badges.map((b) => b.key)).toEqual(['not-ordered', 'warehouse', 'on-site', 'installed']);
     const supplyCards = mosaicCards([project({ supplyOnly: true })], [pkg({ supplyOnly: true })], [mi({ id: 'i1', po: '', qty: 1 })]);
     expect(supplyCards[0].badges.map((b) => b.key)).toEqual(['not-ordered', 'backorder', 'detour']);
+  });
+
+  // 🛒 is the badge both scopes carry: on a project we install, the three physical badges
+  // can only count material that already exists somewhere, so the package nobody has
+  // ordered was invisible on exactly the cards where we do the ordering. OFCI rides with
+  // the bought ones — it is nobody's left to buy.
+  it('carries 🛒 not-ordered on an install card too, and leaves OFCI out of it', () => {
+    const items = [
+      mi({ id: 'i1', po: '', delivered: false, qty: 1 }),
+      mi({ id: 'i2', po: 'OFCI', delivered: false, qty: 1 }),
+      mi({ id: 'i3', po: 'PO-1', delivered: true, receivedQty: 1, qty: 1 }),
+    ];
+    const cards = mosaicCards([project()], [pkg()], items);
+    expect(cards[0].scope).toBe('install');
+    const notOrdered = cards[0].badges.find((b) => b.key === 'not-ordered')?.items ?? [];
+    expect(notOrdered).toHaveLength(1);
+    expect(notOrdered[0]).toMatchObject({ id: 'i1', wpId: 'wp1' });
   });
 
   it('sorts packages DESCENDING within a card (finished on top) and cards ASCENDING between them (worst first)', () => {

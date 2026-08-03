@@ -695,17 +695,46 @@ export interface MosaicItem {
   note?: string;
 }
 
+/** A group of rows under the heading of their work package. */
+export interface PackageGroup<T> { wpId: string; wpLabel: string; rows: T[] }
+/** Groups ANY row that knows which package it belongs to — used by the badge drill-down and
+ * the quick-edit window, whose lists can now be an entire project rather than a single
+ * package. Generic because the two windows that group have different row shapes
+ * (`MosaicItem`, `QuickEditRow`) and what they can't have is two different orderings: the
+ * package label stops being a column repeated on every row and becomes its group's heading
+ * instead.
+ *
+ * Preserves arrival order within each package (the list already arrives sorted by whoever
+ * opened the window) and sorts the packages by label, the way the rest of the app reads
+ * them. */
+export function groupByPackage<T extends { wpId: string; wpLabel: string }>(rows: T[]): PackageGroup<T>[] {
+  const m = new Map<string, PackageGroup<T>>();
+  rows.forEach((r) => {
+    const g = m.get(r.wpId);
+    if (g) g.rows.push(r);
+    else m.set(r.wpId, { wpId: r.wpId, wpLabel: r.wpLabel, rows: [r] });
+  });
+  return [...m.values()].sort((a, b) => a.wpLabel.localeCompare(b.wpLabel, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
 /** The badge row under the bars, and it is NOT the same row in both scopes.
  *
- * When we install, the useful three are physical: where is the material standing right
+ * When we install, the useful ones are physical: where is the material standing right
  * now (🏭 warehouse → 📍 on site → 🔩 installed). When we only supply, on site IS the end
  * of the line, so those three would be the bar again; what the PM chases instead are the
  * three things that keep material from getting there — nothing bought yet, part of the
  * order still owed, and material that left the vendor's ideal path (through our warehouse,
- * or pulled off our own shelves). */
+ * or pulled off our own shelves).
+ *
+ * **🛒 not-ordered is the one badge both scopes carry.** It used to be supply-only, which
+ * read as if buying were somebody else's problem on the projects we also install — and it
+ * is the same problem there, one stage earlier: the three physical badges can only count
+ * material that already exists somewhere, so a package nobody has ordered was invisible in
+ * the badge row of exactly the cards where the PM does the ordering. It leads the row in
+ * both scopes because it is where the lifecycle starts. */
 export type MosaicBadgeKey = Exclude<ItemStage, 'pending'> | 'not-ordered' | 'backorder' | 'detour';
 export interface MosaicBadge { key: MosaicBadgeKey; items: MosaicItem[] }
-const INSTALL_BADGES: MosaicBadgeKey[] = ['warehouse', 'on-site', 'installed'];
+const INSTALL_BADGES: MosaicBadgeKey[] = ['not-ordered', 'warehouse', 'on-site', 'installed'];
 const SUPPLY_BADGES: MosaicBadgeKey[] = ['not-ordered', 'backorder', 'detour'];
 /** How each badge introduces itself — `label` finishes the sentence "N …" in the tooltip
  * and the aria-label, `column` titles the date column of the list it opens. */
@@ -761,7 +790,8 @@ export interface MosaicCard {
    * across cards a small project would shrink to a stub, and the header rollup already
    * carries how big it is. */
   widest: number;
-  /** Exactly three, in display order — see `MosaicBadgeKey`. */
+  /** Three when we only supply, four when we install — in display order, see
+   * `MosaicBadgeKey`. */
   badges: MosaicBadge[];
 }
 
@@ -809,16 +839,17 @@ export function mosaicCards(projects: Project[], packages: WorkPackage[], items:
           if (!target) target = it.id;
           if (bought) ordered++;
         }
-        // Where it physically stands — the card's three badges when we install it.
+        // Where it physically stands — the three badges the card carries when we install it.
         if (stage !== 'pending') {
           bin(stage, {
             ...base,
             date: stage === 'installed' ? r.installedDate : stage === 'on-site' ? r.siteDate : r.receivedDate,
           });
         }
-        // …and what is holding it up, when we only supply it. The three overlap on purpose:
-        // one crate can be un-ordered today, on backorder next month and still take the
-        // warehouse detour, and each of those is a different phone call.
+        // …and what is holding it up. 🛒 lands in both scopes (see `MosaicBadgeKey`); the
+        // other two are the supply-only row. They overlap on purpose: one crate can be
+        // un-ordered today, on backorder next month and still take the warehouse detour,
+        // and each of those is a different phone call.
         if (!bought) bin('not-ordered', { ...base, date: r.onsite });
         if (hasOpenBackorder(r)) {
           const back = backorderQty(r);
