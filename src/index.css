@@ -3,6 +3,7 @@
 @import './styles/typography.css';
 @import './styles/layout.css';
 @import './styles/controls.css';
+@import './styles/screens.css';
 @import './styles/timeline.css';
 
 :root {
@@ -145,9 +146,14 @@ input::placeholder {
   animation: flashIn 180ms ease;
 }
 
-/* Keeps the project header + action rows visible while scrolling a long material
- * list — sits just below the sticky topbar. The corporate-navy band is an inner
- * element; this wrapper stays canvas-colored for the project-switcher row. */
+/* What stays pinned under the top bar while scrolling a long list. Since lote 67 it's
+ * ONLY the search/filter strip, not the action band: with both pinned together the fixed
+ * header measured ~200px tall and half of it was buttons that go unused while reading
+ * (Import Estimate, PDF, Close Project). What actually gets used while scrolling is
+ * search, status filter and collapsing packages. The band stays above and scrolls back
+ * into view on its own, which is when it's needed.
+ * Has to be a SIBLING of the band, not its child: a `position: sticky` only detaches
+ * inside its parent's box, and a parent that's the same height as it can't hold it up. */
 .sticky-toolbar {
   position: sticky;
   top: 64px;

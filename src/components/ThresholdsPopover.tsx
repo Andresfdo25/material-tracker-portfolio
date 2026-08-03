@@ -45,7 +45,12 @@ export function ThresholdsPopover({ projectId }: { projectId: string }) {
 
   return (
     <div style={{ position: 'relative' }}>
-      <Button variant="secondary" size="sm" onClick={() => setOpen((o) => !o)}>⏱ Order-soon window</Button>
+      {/* Short label and 8px padding (lote 67): shares the "SET ACROSS THE PROJECT" group
+          with the three stage/date popovers, which draw at 34px tall, and the group's own
+          label already says this applies to the whole project — "window" repeated that
+          and was what pushed the other two groups to a second line. The full name is still
+          in the popover's own header. */}
+      <Button variant="secondary" size="sm" style={{ padding: '8px 13px' }} onClick={() => setOpen((o) => !o)}>⏱ Order-soon</Button>
       {open && (
         <div
           onMouseLeave={() => setOpen(false)}

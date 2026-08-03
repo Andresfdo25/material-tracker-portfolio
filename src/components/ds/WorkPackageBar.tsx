@@ -151,7 +151,14 @@ export function WorkPackageBar({
         </span>
       )}
       <span style={{ flex: 1 }} />
-      {stateText && <span style={{ font: 'var(--text-caption)', color: dirty ? 'var(--wp-dirty-ink)' : 'var(--muted)' }}>{stateText}</span>}
+      {/* A pill, not loose text (lote 67): the save state is the only thing on this bar
+          that changes on its own, and sitting at the far right, gray, at 14px, it read
+          like the row's footnote. The dot on the left stays where it is — with eight
+          packages open, that column of dots is the fast way to see which carry a draft
+          without reading a single word. */}
+      {stateText && (
+        <span className={`state-chip state-chip--${dirty ? 'draft' : 'saved'}`}>{stateText}</span>
+      )}
       {actions && <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex', alignItems: 'center' }}>{actions}</span>}
     </div>
   );

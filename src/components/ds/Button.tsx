@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes, CSSProperties } from 'react';
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'legal';
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'legal' | 'danger';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
@@ -49,6 +49,10 @@ export function Button({
   // `.btn--ghost` in controls.css, which is what lets it carry a resting outline and a
   // hover wash built on `currentColor` (white over the navy band, ink over canvas).
   // A variant that sets them inline would win over the stylesheet and go flat again.
+  // `danger` (lote 67) declares NOTHING for the same reason, and it's the stronger case:
+  // its whole point is that the red only fills IN on hover/active, which is a state, and
+  // a state can't be written inline. Colour, border and background all live in
+  // `.btn--danger` — plus `.btn--danger.btn--on-dark` for the purple action band.
   const variants: Record<ButtonVariant, CSSProperties> = {
     primary: { background: 'var(--primary)', color: 'var(--on-primary)', borderColor: 'transparent', boxShadow: disabled ? 'none' : 'var(--shadow-button)' },
     secondary: { background: 'var(--canvas)', color: 'var(--ink)', borderColor: disabled ? 'var(--border-strong)' : 'var(--hairline)' },
@@ -57,6 +61,7 @@ export function Button({
     // --link is re-declared lighter in dark mode so it survives as text on the canvas.
     // Pointing at it here would take white-on-blue from 5.8:1 down to 2.9:1.
     legal: { background: 'var(--link-fill)', color: 'var(--on-primary)', borderColor: 'transparent', font: 'var(--text-legal)' },
+    danger: {},
   };
   return (
     <button

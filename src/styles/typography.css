@@ -23,6 +23,14 @@
   --text-mono: 500 13px/1.4 var(--font-mono);
   --text-mono-sm: 500 12px/1.35 var(--font-mono);
 
+  /* Eyebrow — the small-caps label that NAMES a block. Two steps, and the difference is
+   * hierarchy, not taste: 14px (`--text-caption` + tracking, as Overview's band uses it)
+   * names a whole BAND — a chapter of the screen; these 12px name a GROUP OF CONTROLS
+   * inside a bar, which is a tag and never a title. At the same size, a three-button
+   * group's label weighed the same as the section that contains it. */
+  --text-eyebrow: 700 12px/1.2 var(--font-text);
+  --tracking-eyebrow: 0.9px;
+
   --tracking-title: 0.12px;
   --tracking-caption: 0.16px;
 }

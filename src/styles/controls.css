@@ -60,6 +60,43 @@
   border-color: color-mix(in srgb, currentColor 60%, transparent);
 }
 
+/* Destructive (lote 67) — the text-button twin of `.icon-btn--danger`. It exists because
+ * "🗑️ Delete Project" used to be a solid red fill in the top-right corner of the Material
+ * List: the LEAST frequent action on the screen, and the only irreversible one, was also
+ * the loudest. Outline at rest, fills in only on hover: the red gets spent at the moment
+ * it's used, not all day. Color, border and background all live HERE (the `danger`
+ * variant of `Button` declares none of them) because all three change with state, and a
+ * state can't be declared inline. */
+.btn--danger {
+  color: var(--alert-ink);
+  border-color: color-mix(in srgb, var(--alert-ink) 42%, transparent);
+  background: color-mix(in srgb, var(--status-order-now) 22%, transparent);
+}
+.btn--danger:hover:not(:disabled) {
+  color: var(--status-order-now-ink);
+  background: var(--status-order-now);
+  border-color: var(--status-order-now-ink);
+}
+/* On the purple action band: the pair above leans on the semaphore pastel, which has
+ * nothing to sit on over --brand-dark. Here the resting state is a translucent red and
+ * the hover fills solid — same message, different substrate. */
+.btn--danger.btn--on-dark {
+  color: #ffc9c9;
+  border-color: rgba(255, 155, 155, 0.5);
+  background: rgba(216, 67, 67, 0.2);
+}
+.btn--danger.btn--on-dark:hover:not(:disabled) {
+  color: #ffffff;
+  background: #d84343;
+  border-color: transparent;
+}
+/* `.btn`'s hover dims brightness; over a solid red fill that mutes it instead of lighting
+ * it up. Both of these already change background, so the filter is redundant. */
+.btn--danger:hover:not(:disabled),
+:root[data-theme='dark'] .btn--danger:hover:not(:disabled) {
+  filter: none;
+}
+
 /* ============================================================== botones de icono */
 /* El pedido explícito del usuario: que un icono se lea como botón ANTES de pasarle el
  * mouse por encima. Contenedor + hairline + relleno suave en reposo; en hover sube y

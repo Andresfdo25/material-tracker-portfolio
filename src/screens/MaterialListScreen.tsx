@@ -19,7 +19,6 @@ import { usePersisted } from '../store/usePersisted';
 import type { Cfg, ExportMode, ItemStatus, MaterialItem } from '../store/types';
 import { Button } from '../components/ds/Button';
 import { Banner } from '../components/ds/Banner';
-import { StatusBadge } from '../components/ds/StatusBadge';
 import { PackageMoveButtons, WorkPackageBar, type StatusChip } from '../components/ds/WorkPackageBar';
 import { CreateProjectModal } from '../components/CreateProjectModal';
 import { AddWorkPackageModal } from '../components/AddWorkPackageModal';
@@ -278,6 +277,7 @@ export function MaterialListScreen() {
         packages={packages}
         itemsOf={itemsOf}
         itemCount={allItems.length}
+        matchCount={matchCount}
         client={client}
         readOnly={readOnly}
         dirtyCount={dirtyCount}
@@ -311,31 +311,20 @@ export function MaterialListScreen() {
         onStage={(stage, date, ids) => { if (ids?.length) actions.setItemStage(ids, stage, date); }}
       />
 
+      {/* The filter summary ("Showing 4 of 11…") moved inside the search strip (lote
+          67): it used to sit down here, separated by a whole banner from the controls
+          that produced it. What's left in this block are the two MODE notices — archived
+          project and Client·GC view — which are actually screen state. */}
       <div className="no-print">
-        {readOnly ? (
+        {readOnly && (
           <Banner tone="warning" icon="📁">
-            <strong>COMPLETED PROJECT — read-only.</strong> This project was closed and archived. Reopen it from the Completed Projects folder to make changes.
-          </Banner>
-        ) : client ? (
-          <Banner tone="warning" icon="📤">
-            <strong>CLIENT / GC VERSION</strong> — internal procurement columns (lead time, buy-by, submittal state, PO info) are hidden. This is what an export to the client shows.
-          </Banner>
-        ) : (
-          <Banner tone="info" icon="ℹ">
-            Yellow cells (<strong>Lead Time</strong>, <strong>On-Site Req. Date</strong>) flag what's still missing — they clear once filled in. Cells auto-save as a working draft; <strong>Save to report</strong> publishes a package to Overview &amp; Submittals.
+            <strong>Completed project — read-only.</strong> Reopen it from the Completed Projects folder to make changes.
           </Banner>
         )}
-        {(filter.length > 0 || lateOnly || q !== '') && (
-          <div style={{ marginTop: 8, font: 'var(--text-caption)', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <span>
-              Showing <strong style={{ color: 'var(--ink)' }}>{matchCount}</strong> of {allItems.length} items
-            </span>
-            {filter.length > 0 && <span>with status</span>}
-            {filter.map((s) => <StatusBadge key={s} status={s} />)}
-            {lateOnly && <span><strong style={{ color: 'var(--status-order-now-ink)' }}>⏰ past their promised ship date</strong></span>}
-            {q !== '' && <span>matching <strong style={{ color: 'var(--ink)' }}>"{search.trim()}"</strong></span>}
-            <span>. Work packages with no matching rows are hidden.</span>
-          </div>
+        {!readOnly && client && (
+          <Banner tone="warning" icon="📤">
+            <strong>Client / GC version.</strong> Internal procurement columns — lead time, buy-by, submittal state, PO info — are hidden. This is what an export to the client shows.
+          </Banner>
         )}
       </div>
 
@@ -355,11 +344,11 @@ export function MaterialListScreen() {
                 onStatusFilter={(s) => togglePkgFilter(pkg.id, s)}
                 renameControl={!client && !readOnly ? <RenamePackageControl pkg={pkg} /> : undefined}
                 collapsed={!!collapsed[pkg.id]}
-                stateText={dirty ? 'auto-saved draft · changes not in report yet' : `in report since ${pkg.reportSince}`}
+                stateText={dirty ? 'Draft — not in the report yet' : `In the report since ${pkg.reportSince}`}
                 onToggle={() => toggle(pkg.id)}
                 actions={
                   !client && !readOnly && (
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       {/* Scope of THIS package — the project checkbox is only the default
                           it inherited. A package must not mix both scopes, so the mark
                           lives here and not on the item (see closesAtSite). */}
@@ -388,12 +377,18 @@ export function MaterialListScreen() {
                       >
                         {supplyOnly ? '📍 Supply only' : '🔩 Supply & install'}
                       </button>
-                      <Button variant={dirty ? 'primary' : 'secondary'} size="sm" disabled={!dirty} onClick={() => actions.savePackageToReport(pkg.id)}>
+                      {/* Publish and order are two families, and without the rule the 🗑
+                          used to sit flush against the move arrows: six controls in a row
+                          where the irreversible one was neighbor to the most harmless
+                          (lote 67). */}
+                      <span className="action-sep" />
+                      <Button variant={dirty ? 'primary' : 'secondary'} size="sm" disabled={!dirty} style={{ padding: '8px 14px' }} onClick={() => actions.savePackageToReport(pkg.id)}>
                         💾 Save to report
                       </Button>
-                      <Button variant="ghost" size="sm" disabled={!dirty} onClick={() => actions.undoPackage(pkg.id)}>
+                      <Button variant="ghost" size="sm" disabled={!dirty} style={{ padding: '8px 12px' }} onClick={() => actions.undoPackage(pkg.id)}>
                         ↩ Undo
                       </Button>
+                      <span className="action-sep" />
                       <PackageMoveButtons
                         onMoveUp={() => actions.reorderPackage(pkg.id, -1)}
                         onMoveDown={() => actions.reorderPackage(pkg.id, 1)}

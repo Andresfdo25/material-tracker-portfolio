@@ -132,6 +132,15 @@
   --hl-green: #b6ff5c;
   --hl-pink: #ff8ce0;
 
+  /* ---- What's drawn ON TOP of the --brand-dark band (lote 67) — a rule and a label
+   * ink. They exist because every spot that needed a line over the band was inventing its
+   * own rgba(255,255,255,x), and usually borrowing a BUTTON's border to do it: a divider
+   * between groups drawn that way competes with the controls it separates.
+   * Neither is re-declared in dark — the band is deep purple in both themes, so a
+   * translucent white is always the right value. */
+  --band-rule: rgba(255, 255, 255, 0.18);
+  --band-label: rgba(255, 255, 255, 0.64);
+
   /* ---- Work-package title bar — ONE tone for every package (brand-slate tint).
    * Replaces the per-package pastel colors; the yellow/green save-dot stays legible. */
   --wp-bar: #e6edf4;
