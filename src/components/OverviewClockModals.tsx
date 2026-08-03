@@ -19,6 +19,7 @@
 // that map onto stagePatch / setItemStage / editItem, the writers portfolio actually has.
 import { Fragment, useState, type CSSProperties } from 'react';
 import { closeVia, daysWaiting, fmtMDY, itemStage, logDrivesStage, STAGE_META, totalQty } from '../store/logic';
+import { usePersisted } from '../store/usePersisted';
 import type { ItemStage } from '../store/types';
 import { StageMoveButtons, type MoveTarget } from './StageMoveButtons';
 import { Button } from './ds/Button';
@@ -37,7 +38,10 @@ export function LateDeliveriesModal({ rows, onClose, onJumpItem, onReschedule, o
   onMove: (row: LateRow, target: MoveTarget) => void;
 }) {
   const [group, setGroup] = useState<'wp' | 'project'>('wp');
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // Collapsed by default and remembers the last view across reopens: a projectId absent
+  // from the store falls back to `true`, so a project no one has touched yet starts closed.
+  const [collapsedStore, setCollapsedStore] = usePersisted<Record<string, boolean>>('overview:lateCollapsed', {});
+  const isCollapsed = (id: string) => collapsedStore[id] ?? true;
   const [editing, setEditing] = useState<{ id: string; date: string } | null>(null);
   const cols = group === 'wp' ? 5 : 4;
 
@@ -77,16 +81,16 @@ export function LateDeliveriesModal({ rows, onClose, onJumpItem, onReschedule, o
           <tbody>
             {blocks.map((b) => (
               <Fragment key={b.projectId}>
-                <tr onClick={() => setCollapsed((c) => ({ ...c, [b.projectId]: !c[b.projectId] }))} style={{ cursor: 'pointer', background: 'var(--surface-soft)' }}>
+                <tr onClick={() => setCollapsedStore((c) => ({ ...c, [b.projectId]: !isCollapsed(b.projectId) }))} style={{ cursor: 'pointer', background: 'var(--surface-soft)' }}>
                   <td colSpan={cols} style={{ ...tdL, font: 'var(--text-caption)', fontWeight: 700 }}>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ color: 'var(--muted)' }}>{collapsed[b.projectId] ? '▸' : '▾'}</span>
+                      <span style={{ color: 'var(--muted)' }}>{isCollapsed(b.projectId) ? '▸' : '▾'}</span>
                       <span>{b.projectName}</span>
                       <span style={{ color: 'var(--alert-ink)', fontWeight: 600 }}>{b.rows.length} late · worst {b.worst}d</span>
                     </span>
                   </td>
                 </tr>
-                {!collapsed[b.projectId] && b.rows.map((r) => {
+                {!isCollapsed(b.projectId) && b.rows.map((r) => {
                   const isEditing = editing?.id === r.itemId ? editing : null;
                   return (
                     <tr key={r.key} onClick={() => { if (!isEditing) { onClose(); onJumpItem(r.projectId, r.itemId); } }} style={{ cursor: isEditing ? 'default' : 'pointer' }}>
