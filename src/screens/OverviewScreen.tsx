@@ -1,12 +1,11 @@
 // OverviewScreen.tsx — portfolio pivot across projects (report snapshots): the status
 // matrix, a Req.-Date timeline (one lane per project), and the Buy-By table grouped
 // by project → work package with item counts. All read published report snapshots.
-import { Fragment, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useApp } from '../store/useApp';
 import { awaitingInstall, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMDY, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, parseISO, projectClosesAtSite, submittalBlockers, today, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type WaitSeverity } from '../store/logic';
 import type { ComputedItem, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
 import { StatusBadge } from '../components/ds/StatusBadge';
-import { SignatureCard } from '../components/ds/SignatureCard';
 import { Button } from '../components/ds/Button';
 import { Modal } from '../components/ds/Modal';
 import { InstallMosaic } from '../components/InstallMosaic';
@@ -117,16 +116,156 @@ function InstallBar({ closed, awaiting, total, title, tone = 'install' }: { clos
 
 /* Submittal blocker categories (Overview tile breakdown). */
 const BLOCK_CATS = ['Product data', 'Samples', 'Shop drawings', 'Field measurements', 'Other'] as const;
+/* Los mismos nombres, acortados para el ÚNICO renglón que le cabe al gauge ⛔ del riel. El
+   desglose completo de las cinco categorías vive en su tooltip y en Submittals, que es
+   adonde lleva el click. */
+const BLOCK_SHORT: Record<string, string> = {
+  'Product data': 'Product data', Samples: 'Samples', 'Shop drawings': 'Shop dwgs',
+  'Field measurements': 'Field meas.', Other: 'Other',
+};
 
 /* Every section title on the dashboard, in one place — the display face is 400 by
    default and at 20px it read lighter than the tables under it. */
 const sectionTitle: CSSProperties = { font: 'var(--text-title-md)', fontWeight: 700, color: 'var(--title)' };
+
+/* La caja de una tarjeta del tablero. `overflow` lo pisa quien necesite scroll. */
+const card: CSSProperties = { border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--canvas)' };
 
 /* Shared table cells (both stage tables, Portfolio and Buy-By). */
 const th: CSSProperties = { textAlign: 'right', padding: '9px 12px', font: 'var(--text-caption)', color: 'var(--muted)', fontWeight: 600, borderBottom: '1px solid var(--hairline)', whiteSpace: 'nowrap' };
 const thL: CSSProperties = { ...th, textAlign: 'left' };
 const td: CSSProperties = { textAlign: 'right', padding: '10px 12px', font: 'var(--text-mono)', color: 'var(--ink)', borderBottom: '1px solid var(--hairline)' };
 const tdL: CSSProperties = { ...td, textAlign: 'left', font: 'var(--text-body)' };
+
+/* ------------------------------------------------------------------ board chrome */
+
+/* Los rótulos y el número de un tile — a nivel de módulo para que `Gauge` los pueda leer. */
+const tileLabel: CSSProperties = { font: 'var(--text-caption)', color: 'var(--muted)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+const tileNum: CSSProperties = { font: 'var(--text-display-md)', color: 'var(--title)', fontWeight: 600, lineHeight: 1.1 };
+
+/* El rótulo chico y ruleado que nombra una BANDA (un grupo de tarjetas) y, dentro del riel,
+   el reloj al que pertenece un grupo de gauges. Versalitas con tracking para que se lea
+   como etiqueta y nunca compita con el título de una sección. */
+const eyebrow: CSSProperties = {
+  font: 'var(--text-caption)', fontWeight: 700, letterSpacing: 0.9,
+  textTransform: 'uppercase', color: 'var(--muted)',
+};
+
+/** Una banda: el rótulo sobre una regla y, debajo, sus tarjetas. Todo lo que está bajo el
+ * timeline es una de estas, así que bajar por la pantalla es recorrer un índice. */
+function Band({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <section>
+      <div style={{ ...eyebrow, paddingBottom: 6, marginBottom: 14, borderBottom: '2px solid var(--border-strong)' }}>{label}</div>
+      {children}
+    </section>
+  );
+}
+
+/** El encabezado de UNA tarjeta: título a la izquierda, controles alineados a la derecha
+ * sobre ESA MISMA línea, y la bajada de una línea abajo. El `minHeight` de la fila del
+ * título es lo que sostiene la alineación entre columnas: una tarjeta con botones y otra
+ * sin ellos arrancan su tabla a la misma altura. */
+function SectionHead({ icon, title, caption, captionTitle, right }: {
+  icon?: string; title: string; caption?: ReactNode; captionTitle?: string; right?: ReactNode;
+}) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minHeight: 30 }}>
+        <div style={sectionTitle}>{icon ? `${icon} ` : ''}{title}</div>
+        <span style={{ flex: 1, minWidth: 0 }} />
+        {right}
+      </div>
+      {caption != null && (
+        <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', marginTop: 3 }} title={captionTitle}>
+          {caption}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Una línea de la bajada de un gauge. `tone` solo lo usan las de alarma. */
+interface GaugeLine { text: string; tone?: string }
+
+interface GaugeProps {
+  icon: string;
+  label: string;
+  value: number;
+  /** Las dos líneas bajo el número. La segunda casi siempre viene vacía y el hueco se
+   * reserva igual — ver el `minHeight` de abajo. */
+  lines: [GaugeLine, GaugeLine?];
+  /** La tapa de 4px: el color del estado. Vacío = en calma. */
+  accent?: string;
+  /** Relleno del semáforo A PLENO para los dos que son alarma pura (🔴 y 🟠), con su propia
+   * tinta: los pasteles no se re-declaran en dark, así que `--title` encima sería ilegible. */
+  fill?: string;
+  ink?: string;
+  title: string;
+  onClick: () => void;
+}
+
+/** Una celda del riel de indicadores. La forma es idéntica en las siete: tapa de color,
+ * rótulo, número, y DOS ranuras de bajada — la segunda suele estar vacía y se reserva
+ * igual, para que el riel no cambie de alto cada vez que se resuelve la última alarma. */
+function Gauge({ icon, label, value, lines, accent, fill, ink, title, onClick }: GaugeProps) {
+  return (
+    <button
+      type="button"
+      className="ov-gauge"
+      onClick={onClick}
+      title={title}
+      style={{
+        display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0,
+        textAlign: 'left', border: 'none', padding: 0,
+        background: fill ?? 'var(--canvas)', color: ink ?? 'var(--ink)', cursor: 'pointer',
+      }}
+    >
+      <span style={{ height: 4, flex: 'none', background: accent ?? 'transparent' }} />
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 3, padding: '11px 13px 13px' }}>
+        <span style={{ ...tileLabel, color: ink ?? 'var(--muted)' }}>{icon} {label}</span>
+        <span style={{ ...tileNum, color: ink ?? 'var(--title)' }}>{value}</span>
+        {/* 38px = dos renglones de `--text-caption`. Fijo, no automático. */}
+        <span style={{ display: 'flex', flexDirection: 'column', gap: 1, marginTop: 2, minHeight: 38 }}>
+          {[0, 1].map((n) => (
+            <span
+              key={n}
+              style={{
+                font: 'var(--text-caption)', color: lines[n]?.tone ?? ink ?? 'var(--muted)',
+                fontWeight: lines[n]?.tone ? 600 : 400,
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+              }}
+            >
+              {lines[n]?.text ?? ''}
+            </span>
+          ))}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/** Un reloj del riel. Los tres grupos SON los tres relojes del motor (CLAUDE.md /
+ * ARCHITECTURE.md §4): «¿tengo que comprar?», «¿llegó o no llegó?», «¿tengo que instalar?».
+ * El grupo ocupa tantas columnas del riel como gauges tiene (`.ov-rail` es una grilla de
+ * siete, una por indicador), así que todos los indicadores del tablero miden lo mismo estén
+ * en el grupo que estén. `minmax(0, 1fr)` y no `1fr` pelado: el `1fr` pelado es
+ * `minmax(auto, 1fr)`, así que una celda con más texto que las otras se lleva más ancho. */
+function ClockGroup({ label, items }: { label: string; items: GaugeProps[] }) {
+  const n = items.length;
+  return (
+    <div style={{ ...card, gridColumn: `span ${n}`, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ ...eyebrow, padding: '7px 13px', background: 'var(--surface-soft)', borderBottom: '1px solid var(--hairline)' }}>{label}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))`, flex: 1 }}>
+        {items.map((g, i) => (
+          <span key={g.label} style={{ display: 'flex', borderLeft: i === 0 ? undefined : '1px solid var(--hairline)' }}>
+            <Gauge {...g} />
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** How long an item has been sitting since it was received — read off the report, oldest
  * first everywhere it's used. Kept as one helper so the group's `waited` number and the
@@ -304,7 +443,10 @@ function StageTable({ blocks, empty, collapsed, onToggle, onJumpProject, onJumpI
 }) {
   const cols = 8;
   return (
-    <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--canvas)' }}>
+    // `overflow: auto` y no el `hidden` que traía: son ocho columnas, así que abajo de
+    // ~1100px locales las últimas se salían de la caja y quedaban RECORTADAS, sin barra
+    // para llegar a ellas.
+    <div style={{ ...card, overflow: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--surface-soft)' }}>
@@ -1163,18 +1305,17 @@ export function OverviewScreen() {
   // its numbers inside) keeps a usable width at half-screen.
   // whiteSpace normal so "ORDER NOW" / "Needs data" wrap to two lines instead of forcing
   // the table past its half-width container.
-  const thN: CSSProperties = { ...th, padding: '9px 6px', whiteSpace: 'normal' };
-  const tdN: CSSProperties = { ...td, padding: '10px 6px' };
-  // Tiles are a single bordered block beside the title (mockup 07242026): one wide
-  // "Blocked by submittal" on top, then a 2×2 grid sharing hairline dividers.
-  const tile: CSSProperties = { textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 4, padding: '12px 14px', background: 'var(--canvas)', border: 'none', cursor: 'pointer' };
-  const tileLabel: CSSProperties = { font: 'var(--text-caption)', color: 'var(--muted)', fontWeight: 600 };
-  const tileNum: CSSProperties = { font: 'var(--text-display-md)', color: 'var(--title)', fontWeight: 600, lineHeight: 1.1 };
-  const tileSub: CSSProperties = { font: 'var(--text-caption)', color: 'var(--muted)' };
+  // Portfolio count columns: tighter side padding so the Complete bar (which has to fit
+  // its numbers inside) keeps a usable width. whiteSpace normal so "ORDER NOW" / "Needs
+  // data" wrap to two lines instead of forcing the table past its container at a narrow
+  // viewport.
+  const thN: CSSProperties = { ...th, padding: '9px 8px', whiteSpace: 'normal' };
+  const tdN: CSSProperties = { ...td, padding: '10px 8px' };
   const jumpProject = (id: string) => { setActiveProjectId(id); nav('list'); };
   // Square action button for the ⏰ Resolve column — one glyph, no label.
   const iconBtn: CSSProperties = { padding: 0, width: 30, height: 28, minWidth: 30, fontSize: 14, lineHeight: 1 };
-  const buyByCell = (overdue: boolean): CSSProperties => ({ ...td, textAlign: 'left', font: 'var(--text-mono)', fontWeight: 600, color: overdue ? 'var(--status-order-now-ink)' : 'var(--ink)' });
+  // `--alert-ink`: la fecha vencida se pinta sobre `--canvas`, sin pastel debajo.
+  const buyByCell = (overdue: boolean): CSSProperties => ({ ...td, textAlign: 'left', font: 'var(--text-mono)', fontWeight: 600, color: overdue ? 'var(--alert-ink)' : 'var(--ink)' });
   const rangeText = (nearest: string, latest: string) => (nearest === latest ? fmtMDY(nearest) : `${fmtMDY(nearest)} → ${fmtMDY(latest)}`);
 
   // One group-by control, two independent tables (Buy-By and Late deliveries) — same
@@ -1196,136 +1337,322 @@ export function OverviewScreen() {
     </>
   );
 
+  // ---- El riel de indicadores, agrupado por los TRES RELOJES del motor ----
+  // Cada gauge trae UNA línea de desglose y, opcionalmente, una de alarma; el hueco de la
+  // segunda se reserva siempre (ver `Gauge`) para que el riel no cambie de alto cuando la
+  // última alarma se resuelve.
+  const blockedTop = BLOCK_CATS.filter((c) => blockedByCat[c] > 0).sort((a, b) => blockedByCat[b] - blockedByCat[a]);
+  const blockedLine = blockedTotal === 0
+    ? 'nothing blocked — all clear'
+    : blockedTop.slice(0, 2).map((c) => `${BLOCK_SHORT[c]} ${blockedByCat[c]}`).join(' · ')
+      + (blockedTop.length > 2 ? ` · +${blockedTop.length - 2}` : '');
+  // `--alert-ink` / `--warn-ink` y NO la tinta del semáforo: estas líneas se leen sobre
+  // `--canvas`, no sobre un pastel.
+  const awaitAlert: GaugeLine | undefined = installOverdue > 0 || installUnscheduled > 0
+    ? {
+        text: [installOverdue > 0 ? `⚠ ${installOverdue} past date` : '', installUnscheduled > 0 ? `❔ ${installUnscheduled} no date` : ''].filter(Boolean).join(' · '),
+        tone: installOverdue > 0 ? 'var(--alert-ink)' : 'var(--warn-ink)',
+      }
+    : undefined;
+
+  const buyClock: GaugeProps[] = [
+    {
+      icon: '🔴', label: 'ORDER NOW', value: totalOrderNow,
+      title: 'Items already past their buy-by date — open the Material List',
+      onClick: () => nav('list'),
+      fill: totalOrderNow ? 'var(--status-order-now)' : undefined,
+      ink: totalOrderNow ? 'var(--status-order-now-ink)' : undefined,
+      accent: totalOrderNow ? 'var(--status-order-now-ink)' : undefined,
+      lines: [{ text: totalOrderNow ? 'past the buy-by date' : 'nothing past its buy-by' }],
+    },
+    {
+      icon: '🟠', label: 'Order soon', value: statusTotals['order-soon'],
+      title: 'Items whose buy-by date falls inside the order-soon window — open the Material List',
+      onClick: () => nav('list'),
+      fill: 'var(--status-order-soon)', ink: 'var(--status-order-soon-ink)', accent: 'var(--status-order-soon-ink)',
+      lines: [{ text: 'inside the order-soon window' }],
+    },
+    {
+      icon: '⛔', label: 'Blocked by submittal', value: blockedTotal,
+      title: blockedTotal
+        ? `Waiting on a submittal component:\n${BLOCK_CATS.filter((c) => blockedByCat[c] > 0).map((c) => `· ${c} ${blockedByCat[c]}`).join('\n')}\n\nOpen Submittals`
+        : 'Nothing is waiting on a submittal — open Submittals',
+      onClick: () => nav('submittals'),
+      accent: blockedTotal ? 'var(--brand-orange)' : undefined,
+      lines: [
+        { text: blockedLine },
+        blockedNow > 0 ? { text: `⚠ ${blockedNow} past buy-by — expedite`, tone: 'var(--alert-ink)' } : undefined,
+      ],
+    },
+    {
+      icon: '❔', label: 'Needs data', value: needsData,
+      title: 'Items the buy-by date cannot be calculated for — open the Material List',
+      onClick: () => nav('list'),
+      accent: needsData ? 'var(--border-strong)' : undefined,
+      lines: [{ text: `${missingLead} no lead · ${missingOnsite} no on-site` }],
+    },
+  ];
+  const transitClock: GaugeProps[] = [
+    {
+      icon: '⏰', label: 'Late deliveries', value: lateRows.length,
+      title: 'Bought, promised for a date that has passed, still not here — jump to the table',
+      onClick: () => lateRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      accent: lateRows.length ? 'var(--alert-ink)' : undefined,
+      lines: [{
+        text: lateRows.length ? `worst is ${lateRows[0].behind} day${lateRows[0].behind === 1 ? '' : 's'} late` : 'every promised date holds',
+        tone: lateRows.length ? 'var(--alert-ink)' : undefined,
+      }],
+    },
+    {
+      icon: '🚚', label: 'Partially delivered', value: statusTotals.partial,
+      title: 'Items with part of the order still on backorder — open the Material List',
+      onClick: () => nav('list'),
+      accent: statusTotals.partial ? 'var(--warn-ink)' : undefined,
+      lines: [{ text: 'open backorders' }],
+    },
+  ];
+  const closeClock: GaugeProps[] = [
+    {
+      icon: '🏭', label: hasSupplyOnly ? 'Awaiting site / install' : 'Awaiting installation',
+      value: awaiting.length,
+      title: 'Material paid for and in hand that has not reached its last stage — open the Material List',
+      onClick: () => nav('list'),
+      accent: installOverdue > 0 ? 'var(--alert-ink)' : installUnscheduled > 0 ? 'var(--warn-ink)' : undefined,
+      lines: [{ text: `${inWarehouse} warehouse · ${onSite} on site` }, awaitAlert],
+    },
+  ];
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      {/* 1. Masthead + counters (left) · timeline (right) — layout mockup 07242026 */}
-      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        <div style={{ flex: '1 1 340px', minWidth: 300, maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
-              <div style={{ font: 'var(--text-display-xl)', fontSize: 60, lineHeight: 1.05, color: 'var(--title)', fontWeight: 600 }}>Overview</div>
-              <div style={{ font: 'var(--text-title-sm)', color: 'var(--muted)', fontWeight: 500 }}>{fmtLong(today())}</div>
-            </div>
-            <div style={{ font: 'var(--text-title-sm)', color: 'var(--muted)', marginTop: 6 }}>Portfolio — all projects, report snapshots</div>
-          </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 30 }}>
+      {/* ---------------------------------------------------- 1. Masthead a todo ancho */}
+      <header style={{ display: 'flex', alignItems: 'baseline', gap: 20, flexWrap: 'wrap', paddingBottom: 10, borderBottom: '2px solid var(--border-strong)' }}>
+        <h1 style={{ margin: 0, font: 'var(--text-display-xl)', fontSize: 56, lineHeight: 1.05, color: 'var(--title)', fontWeight: 600 }}>Overview</h1>
+        <span style={{ flex: 1, minWidth: 0 }} />
+        <div style={{ font: 'var(--text-title-sm)', color: 'var(--muted)', fontWeight: 500 }}>{fmtLong(today())}</div>
+      </header>
 
-          {/* One block: the wide Blocked tile, then a 2×2 grid sharing dividers. */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <button
-              type="button"
-              onClick={() => nav('submittals')}
-              style={{ ...tile, borderWidth: 2, borderStyle: 'solid', borderColor: 'var(--brand-orange)', borderRadius: 'var(--radius-md)' }}
-            >
-              <div style={tileLabel}>⛔ Blocked by submittal</div>
-              <div style={tileNum}>{blockedTotal}</div>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 2 }}>
-                {BLOCK_CATS.filter((c) => blockedByCat[c] > 0).map((c) => (
-                  <span key={c} style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}>{c} <strong style={{ color: 'var(--ink)' }}>{blockedByCat[c]}</strong></span>
-                ))}
-                {blockedTotal === 0 && <span style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}>none blocked — all clear</span>}
-              </div>
-              {blockedNow > 0 && <div style={{ ...tileSub, color: 'var(--status-order-now-ink)', fontWeight: 600 }}>⚠ {blockedNow} already past buy-by — expedite</div>}
-            </button>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
-              <button type="button" onClick={() => nav('list')} style={{ ...tile, borderRight: '1px solid var(--hairline)', borderBottom: '1px solid var(--hairline)' }}>
-                <div style={tileLabel}>🟠 Order soon</div>
-                <div style={tileNum}>{statusTotals['order-soon']}</div>
-                <div style={tileSub}>within the order-soon window</div>
-              </button>
-              <button type="button" onClick={() => nav('list')} style={{ ...tile, borderBottom: '1px solid var(--hairline)' }}>
-                <div style={tileLabel}>{hasSupplyOnly ? '🏭 Awaiting site / install' : '🏭 Awaiting installation'}</div>
-                <div style={tileNum}>{awaiting.length}</div>
-                <div style={tileSub}>{inWarehouse} in warehouse · {onSite} on site</div>
-                {(installOverdue > 0 || installUnscheduled > 0) && (
-                  <div style={{ ...tileSub, color: installOverdue > 0 ? 'var(--status-order-now-ink)' : 'var(--status-order-soon-ink)', fontWeight: 600 }}>
-                    {installOverdue > 0 && `⚠ ${installOverdue} past On-Site date`}
-                    {installOverdue > 0 && installUnscheduled > 0 && ' · '}
-                    {installUnscheduled > 0 && `❔ ${installUnscheduled} unscheduled`}
-                  </div>
-                )}
-              </button>
-              <button type="button" onClick={() => nav('list')} style={{ ...tile, borderRight: '1px solid var(--hairline)' }}>
-                <div style={tileLabel}>🚚 Partially delivered</div>
-                <div style={tileNum}>{statusTotals.partial}</div>
-                <div style={tileSub}>open backorders</div>
-              </button>
-              <button type="button" onClick={() => nav('list')} style={tile}>
-                <div style={tileLabel}>❔ Needs data</div>
-                <div style={tileNum}>{needsData}</div>
-                <div style={tileSub}>{missingLead} missing lead · {missingOnsite} missing on-site</div>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ flex: '2 1 620px', minWidth: 420 }}>
-          {/* Title, the one-line how-to and the legend share one band: the key belongs
-              next to the chart's name, not stacked as a first row inside the card. */}
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
-            <div style={{ flex: '1 1 260px', minWidth: 240 }}>
-              <div style={sectionTitle}>🗓 Timeline</div>
-              <div
-                style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}
-                title="Fixed 6-month window from today. Overdue Req. dates show only when they still have ORDER NOW items, and are pinned to today; an unconfirmed ◆ field-measure visit is always pinned there. Confirming a drag — or a ◆ — publishes the package to the report, no second save needed."
-              >
-                6 months from today · hover for detail · click to open · <strong>drag a dot to reschedule</strong> · click a ◆ once measured
-              </div>
-            </div>
-            <TimelineLegend />
-          </div>
-          <ReqDateTimeline lanes={lanes} onJumpItem={jumpToItem} onJumpProject={jumpProject} onSetDate={setMilestoneDate} onConfirmFm={confirmFieldMeasure} />
-        </div>
+      {/* ------------------------------------------------ 2. El riel de indicadores */}
+      <div className="ov-rail">
+        <ClockGroup label="Buy" items={buyClock} />
+        <ClockGroup label="In transit" items={transitClock} />
+        <ClockGroup label="Close out" items={closeClock} />
       </div>
 
-      {/* 3. The action row: This week · Buy-By · Late deliveries, side by side. Everything
-          that has a deadline attached lives here, above the fold — the portfolio and stage
-          tables below are for reading, this row is for acting. */}
-      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        {/* The card is a headline, not a table: it no longer grows with the row (flex-grow
-            0) and caps at 300px, so the two tables next to it get the width instead. */}
-        <div style={{ flex: '0 1 260px', minWidth: 224, maxWidth: 300, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {/* One card, two clocks. The buy-by headline and the third clock ("what did
-              somebody promise me and not deliver?") are the same kind of deadline, so the
-              late-deliveries tile lives INSIDE the card instead of under it. The card's
-              body copy is gone: the headline already says it, and the two controls below
-              are where the answer is. Both go through `action` because SignatureCard
-              renders children above it, and the tile belongs under the button. */}
-          <SignatureCard
-            tone={totalOrderNow ? 'coral' : 'forest'}
-            eyebrow="This week"
-            title={totalOrderNow ? `${totalOrderNow} item${totalOrderNow === 1 ? '' : 's'} past its buy-by date` : 'Nothing past its buy-by date'}
-            action={
-              <>
-                <Button variant="secondary" size="sm" onClick={() => nav('list')} style={{ background: 'rgba(255,255,255,0.14)', color: '#fff', borderColor: 'rgba(255,255,255,0.4)' }}>
-                  Open Material List →
-                </Button>
-                {/* Clicking scrolls to its own table further down the page. */}
-                <button
-                  type="button"
-                  onClick={() => lateRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                  style={{ ...tile, width: '100%', marginTop: 'var(--space-lg)', borderWidth: 1, borderStyle: 'solid', borderColor: lateRows.length ? 'var(--status-order-now-ink)' : 'var(--border-strong)', borderRadius: 'var(--radius-md)' }}
-                >
-                  <div style={tileLabel}>⏰ Late deliveries</div>
-                  <div style={{ ...tileNum, color: lateRows.length ? 'var(--status-order-now-ink)' : 'var(--title)' }}>{lateRows.length}</div>
-                  <div style={tileSub}>
-                    {lateRows.length
-                      ? `promised and not here · worst is ${lateRows[0].behind} day${lateRows[0].behind === 1 ? '' : 's'} late`
-                      : 'every promised ship date still holds'}
-                  </div>
-                </button>
-              </>
-            }
-          />
-        </div>
+      {/* ------------------------------------------------------- 3. Timeline, full width */}
+      <section>
+        <SectionHead
+          icon="🗓"
+          title="Timeline"
+          caption={<>6 months from today · hover for detail · click to open · <strong>drag a dot to reschedule</strong> · click a ◆ once measured</>}
+          captionTitle="Fixed 6-month window from today. Overdue Req. dates show only when they still have ORDER NOW items, and are pinned to today; an unconfirmed ◆ field-measure visit is always pinned there. Confirming a drag — or a ◆ — publishes the package to the report, no second save needed."
+          right={<TimelineLegend />}
+        />
+        <ReqDateTimeline lanes={lanes} onJumpItem={jumpToItem} onJumpProject={jumpProject} onSetDate={setMilestoneDate} onConfirmFm={confirmFieldMeasure} />
+      </section>
 
-        <div style={{ flex: '3 1 440px', minWidth: 330 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-            <div style={sectionTitle}>📅 Buy-By dates in the next 14 days</div>
-            <span style={{ flex: 1 }} />
-            {groupBtns(groupMode, setGroupMode)}
+      {/* --------------------- 4. Delivery & installation status */}
+      {/* Todo lo que habla de material YA COMPRADO: lo que no llegó (⏰) y lo que llegó y
+          todavía no cerró (el mosaico / Detailed). Las dos mitades del mismo ciclo, en una
+          banda. */}
+      <Band label="Delivery & installation status">
+        <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div ref={lateRef} style={{ flex: '1 1 460px', minWidth: 340 }}>
+            <SectionHead
+              icon="⏰"
+              title="Late deliveries"
+              caption="Past its promised date · 🗓 sets a new promise · ✅ confirms it arrived"
+              captionTitle="Bought, promised for a date that has passed, still not here. Either action publishes that work package to the report — no second save needed. Click the row to open the item."
+              right={(
+                <>
+                  {groupBtns(lateGroup, setLateGroup)}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={lateBlocks.length === 0}
+                    onClick={() => {
+                      const target = !allLateCollapsed;
+                      setLateCollapsed(Object.fromEntries(lateBlocks.map((b) => [b.projectId, target])));
+                    }}
+                    style={{ padding: '4px 8px', color: 'var(--muted)', whiteSpace: 'nowrap' }}
+                  >
+                    {allLateCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
+                  </Button>
+                </>
+              )}
+            />
+            <div style={{ ...card, overflow: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: 'var(--surface-soft)' }}>
+                    {lateGroup === 'wp' && <th style={thL}>Work package</th>}
+                    <th style={thL}>Item</th><th style={thL}>Promised</th>
+                    <th style={th}>Days late</th><th style={{ ...th, width: 78 }}>Resolve</th><th style={{ ...th, width: 30 }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {lateBlocks.map((b) => (
+                    <Fragment key={b.projectId}>
+                      <tr
+                        onClick={() => setLateCollapsed((c) => ({ ...c, [b.projectId]: !c[b.projectId] }))}
+                        title={lateCollapsed[b.projectId] ? 'Expand this project' : 'Collapse this project'}
+                        style={{ cursor: 'pointer', background: 'var(--surface-soft)' }}
+                      >
+                        <td colSpan={lateCols + 1} style={{ ...tdL, font: 'var(--text-caption)', fontWeight: 700, color: 'var(--ink)' }}>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ color: 'var(--muted)' }}>{lateCollapsed[b.projectId] ? '▸' : '▾'}</span>
+                            <span>{b.projectName}</span>
+                            <span style={{ color: 'var(--alert-ink)', fontWeight: 600 }}>
+                              {b.rows.length} late · worst {b.worst}d
+                            </span>
+                          </span>
+                        </td>
+                      </tr>
+                      {!lateCollapsed[b.projectId] && b.rows.map((r) => {
+                        const editing = reschedule && reschedule.id === r.itemId ? reschedule : null;
+                        return (
+                          <tr
+                            key={r.key}
+                            onClick={() => { if (!editing) jumpToItem(r.projectId, r.itemId); }}
+                            style={{ cursor: editing ? 'default' : 'pointer' }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            {lateGroup === 'wp' && <td style={{ ...tdL, color: 'var(--muted)' }}>{r.wpLabel}</td>}
+                            <td style={tdL} title={`${r.description}${r.vendor ? ` · ${r.vendor}` : ''}${r.po ? ` · PO ${r.po}` : ''}`}>{r.description}</td>
+                            <td style={buyByCell(true)}>
+                              {editing ? (
+                                <input
+                                  type="date"
+                                  autoFocus
+                                  value={editing.date}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(e) => setReschedule({ id: r.itemId, date: e.target.value })}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') applyReschedule(r, editing.date);
+                                    if (e.key === 'Escape') setReschedule(null);
+                                  }}
+                                  style={{ height: 32, padding: '0 6px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--hairline)', font: 'var(--text-mono)', color: 'var(--ink)', background: 'var(--canvas)' }}
+                                />
+                              ) : fmtMDY(r.promised)}
+                            </td>
+                            <td style={{ ...td, fontWeight: 700, color: 'var(--alert-ink)' }}>{r.behind}</td>
+                            <td style={{ ...td, textAlign: 'left', whiteSpace: 'nowrap', padding: '10px 8px' }} onClick={(e) => e.stopPropagation()}>
+                              <span style={{ display: 'inline-flex', gap: 4 }}>
+                                {editing ? (
+                                  <>
+                                    <Button size="sm" variant="primary" style={iconBtn} title="Save the new promised date" aria-label="Save date" onClick={() => applyReschedule(r, editing.date)}>✓</Button>
+                                    <Button size="sm" variant="ghost" style={iconBtn} title="Cancel" aria-label="Cancel" onClick={() => setReschedule(null)}>✕</Button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      style={iconBtn}
+                                      title="Reschedule — the vendor moved the delivery, set the new promised date"
+                                      aria-label={`Reschedule ${r.description}`}
+                                      onClick={() => setReschedule({ id: r.itemId, date: r.promised })}
+                                    >
+                                      🗓
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      disabled={!!r.blocked}
+                                      style={iconBtn}
+                                      title={r.blocked === 'log'
+                                        ? 'This item follows its delivery log — register the arrival in Breakdown Delivery (🚚) from the Material List.'
+                                        : r.blocked === 'partial'
+                                          ? 'Part of this order is already here — register the rest by quantity in Breakdown Delivery (🚚) from the Material List.'
+                                          : 'It arrived — mark it received into 🏭 the warehouse, stamped today'}
+                                      aria-label={`Mark ${r.description} as arrived`}
+                                      onClick={() => confirmArrived(r)}
+                                    >
+                                      ✅
+                                    </Button>
+                                  </>
+                                )}
+                              </span>
+                            </td>
+                            <td style={{ ...td, color: 'var(--muted)', textAlign: 'center', padding: '10px 6px' }}>›</td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
+                  {lateRows.length === 0 && (
+                    <tr><td colSpan={lateCols + 1} style={{ ...tdL, color: 'var(--muted)', textAlign: 'center' }}>Nothing past its promised ship/delivery date.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-          <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--canvas)' }}>
+
+          <div style={{ flex: '1 1 460px', minWidth: 340 }}>
+            <SectionHead
+              icon="🏗"
+              title="Installation status"
+              caption={installView === 'mosaic'
+                ? 'Every project, one bar per package — solid is closed out: 🔩 installed, or 📍 on site where we only supply. Click a bar to open the package, a badge for its list.'
+                : 'Material already in hand, by project › work package — both scopes, each package measured against its own finish line. Waiting counts days since it was received; click an item count for the per-item list.'}
+              right={(
+                <>
+                  {installView === 'table' && (
+                    <>
+                      <Button size="sm" variant={stagePending ? 'primary' : 'secondary'} onClick={() => setStagePending(true)} style={{ padding: '5px 10px' }}>Still open</Button>
+                      <Button size="sm" variant={!stagePending ? 'primary' : 'secondary'} onClick={() => setStagePending(false)} style={{ padding: '5px 10px' }}>All packages</Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={stageByProject.length === 0}
+                        onClick={() => {
+                          const target = !allStageCollapsed;
+                          setStageCollapsed(Object.fromEntries(stageByProject.map((p) => [p.projectId, target])));
+                        }}
+                        style={{ padding: '4px 8px', color: 'var(--muted)', whiteSpace: 'nowrap' }}
+                      >
+                        {allStageCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
+                      </Button>
+                    </>
+                  )}
+                  <Button size="sm" variant={installView === 'mosaic' ? 'primary' : 'secondary'} onClick={() => setInstallView('mosaic')} style={{ padding: '5px 10px' }}>▦ Mosaic</Button>
+                  <Button size="sm" variant={installView === 'table' ? 'primary' : 'secondary'} onClick={() => setInstallView('table')} style={{ padding: '5px 10px' }}>▤ Detailed</Button>
+                </>
+              )}
+            />
+            {installView === 'mosaic' ? (
+              <InstallMosaic
+                cards={mosaic}
+                empty="No work packages with items yet — the mosaic fills in as material is added and published."
+                onJumpProject={jumpProject}
+                onJumpItem={jumpToItem}
+                onBadgeDrill={(projectId, key) => setBadgeDrill({ projectId, key })}
+              />
+            ) : (
+              <StageTable
+                blocks={stageByProject}
+                collapsed={stageCollapsed}
+                onToggle={toggleStage}
+                onJumpProject={jumpProject}
+                onJumpItem={jumpToItem}
+                onDrill={(g) => setDrillKey(g.key)}
+                empty={stagePending ? 'Nothing open — every received item reached its finish line.' : 'No material received yet.'}
+              />
+            )}
+          </div>
+        </div>
+      </Band>
+
+      {/* ------------------------------------------------------- 5. What to watch */}
+      <Band label="What to watch">
+        <div style={{ flex: '1 1 100%' }}>
+          <SectionHead
+            icon="📅"
+            title="Buy-By dates in the next 14 days"
+            caption="Order these to hold the On-Site Req. date. Click a row to open the item."
+            right={groupBtns(groupMode, setGroupMode)}
+          />
+          <div style={card}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 {groupMode === 'wp' ? (
@@ -1378,167 +1705,16 @@ export function OverviewScreen() {
             </table>
           </div>
         </div>
+      </Band>
 
-        {/* 3b. ⏰ Late deliveries — one row per ITEM, not per package: the two ways out of a
-            late delivery (reschedule it, or confirm it arrived) are decisions about one
-            item, so collapsing them into a group row would hide exactly what has to be
-            acted on. Group by therefore only adds project header rows above the items. */}
-        <div ref={lateRef} style={{ flex: '3 1 440px', minWidth: 330 }}>
-          {/* Title + one-line how-to on the left, both controls stacked on the right —
-              same band as the Timeline, so the caption stops running under Group by. */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
-            <div style={{ flex: '1 1 260px', minWidth: 240 }}>
-              <div style={sectionTitle}>⏰ Late deliveries</div>
-              <div
-                style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}
-                title="Bought, promised for a date that has passed, still not here. Either action publishes that work package to the report — no second save needed. Click the row to open the item."
-              >
-                Past its promised date · 🗓 sets a new promise · ✅ confirms it arrived
-              </div>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
-              {/* groupBtns emits loose siblings ("Group by:" + the two pills) and counts
-                  on its parent being a horizontal flex row — the column below is not one. */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{groupBtns(lateGroup, setLateGroup)}</div>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={lateBlocks.length === 0}
-              onClick={() => {
-                const target = !allLateCollapsed;
-                setLateCollapsed(Object.fromEntries(lateBlocks.map((b) => [b.projectId, target])));
-              }}
-              style={{ padding: '4px 8px', color: 'var(--muted)', whiteSpace: 'nowrap' }}
-            >
-              {allLateCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
-            </Button>
-            </div>
-          </div>
-          <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'auto', background: 'var(--canvas)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: 'var(--surface-soft)' }}>
-                {lateGroup === 'wp' && <th style={thL}>Work package</th>}
-                <th style={thL}>Item</th><th style={thL}>Promised</th>
-                <th style={th}>Days late</th><th style={{ ...th, width: 78 }}>Resolve</th><th style={{ ...th, width: 30 }} />
-              </tr>
-            </thead>
-            <tbody>
-              {lateBlocks.map((b) => (
-                <Fragment key={b.projectId}>
-                  <tr
-                    onClick={() => setLateCollapsed((c) => ({ ...c, [b.projectId]: !c[b.projectId] }))}
-                    title={lateCollapsed[b.projectId] ? 'Expand this project' : 'Collapse this project'}
-                    style={{ cursor: 'pointer', background: 'var(--surface-soft)' }}
-                  >
-                    <td colSpan={lateCols + 1} style={{ ...tdL, font: 'var(--text-caption)', fontWeight: 700, color: 'var(--ink)' }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ color: 'var(--muted)' }}>{lateCollapsed[b.projectId] ? '▸' : '▾'}</span>
-                        <span>{b.projectName}</span>
-                        <span style={{ color: 'var(--status-order-now-ink)', fontWeight: 600 }}>
-                          {b.rows.length} late · worst {b.worst}d
-                        </span>
-                      </span>
-                    </td>
-                  </tr>
-                  {!lateCollapsed[b.projectId] && b.rows.map((r) => {
-                const editing = reschedule && reschedule.id === r.itemId ? reschedule : null;
-                return (
-                  <tr
-                    key={r.key}
-                    onClick={() => { if (!editing) jumpToItem(r.projectId, r.itemId); }}
-                    style={{ cursor: editing ? 'default' : 'pointer' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                  >
-                    {lateGroup === 'wp' && <td style={{ ...tdL, color: 'var(--muted)' }}>{r.wpLabel}</td>}
-                    <td style={tdL} title={`${r.description}${r.vendor ? ` · ${r.vendor}` : ''}${r.po ? ` · PO ${r.po}` : ''}`}>{r.description}</td>
-                    {/* The new date is typed where the old one is read — the cell the row is
-                        about — instead of in a modal that would hide the rest of the list. */}
-                    <td style={buyByCell(true)}>
-                      {editing ? (
-                        <input
-                          type="date"
-                          autoFocus
-                          value={editing.date}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => setReschedule({ id: r.itemId, date: e.target.value })}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') applyReschedule(r, editing.date);
-                            if (e.key === 'Escape') setReschedule(null);
-                          }}
-                          style={{ height: 32, padding: '0 6px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--hairline)', font: 'var(--text-mono)', color: 'var(--ink)', background: 'var(--canvas)' }}
-                        />
-                      ) : fmtMDY(r.promised)}
-                    </td>
-                    <td style={{ ...td, fontWeight: 700, color: 'var(--status-order-now-ink)' }}>{r.behind}</td>
-                    {/* Icon-only: the two actions are the same two on every row, so the
-                        labels were repeated width. Each keeps its full sentence in the
-                        tooltip, and a blocked ✅ still says why instead of going mute. */}
-                    <td style={{ ...td, textAlign: 'left', whiteSpace: 'nowrap', padding: '10px 8px' }} onClick={(e) => e.stopPropagation()}>
-                      <span style={{ display: 'inline-flex', gap: 4 }}>
-                        {editing ? (
-                          <>
-                            <Button size="sm" variant="primary" style={iconBtn} title="Save the new promised date" aria-label="Save date" onClick={() => applyReschedule(r, editing.date)}>✓</Button>
-                            <Button size="sm" variant="ghost" style={iconBtn} title="Cancel" aria-label="Cancel" onClick={() => setReschedule(null)}>✕</Button>
-                          </>
-                        ) : (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              style={iconBtn}
-                              title="Reschedule — the vendor moved the delivery, set the new promised date"
-                              aria-label={`Reschedule ${r.description}`}
-                              onClick={() => setReschedule({ id: r.itemId, date: r.promised })}
-                            >
-                              🗓
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              disabled={!!r.blocked}
-                              style={iconBtn}
-                              title={r.blocked === 'log'
-                                ? 'This item follows its delivery log — register the arrival in Breakdown Delivery (🚚) from the Material List.'
-                                : r.blocked === 'partial'
-                                  ? 'Part of this order is already here — register the rest by quantity in Breakdown Delivery (🚚) from the Material List.'
-                                  : 'It arrived — mark it received into 🏭 the warehouse, stamped today'}
-                              aria-label={`Mark ${r.description} as arrived`}
-                              onClick={() => confirmArrived(r)}
-                            >
-                              ✅
-                            </Button>
-                          </>
-                        )}
-                      </span>
-                    </td>
-                    <td style={{ ...td, color: 'var(--muted)', textAlign: 'center', padding: '10px 6px' }}>›</td>
-                  </tr>
-                );
-                  })}
-                </Fragment>
-              ))}
-              {lateRows.length === 0 && (
-                <tr><td colSpan={lateCols + 1} style={{ ...tdL, color: 'var(--muted)', textAlign: 'center' }}>Nothing past its promised ship/delivery date.</td></tr>
-              )}
-            </tbody>
-          </table>
-          </div>
-        </div>
-      </div>
-
-      {/* 4. Portfolio (left) + Installation status (right), half the width each */}
-      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-      <div style={{ flex: '1 1 460px', minWidth: 340 }}>
-        <div style={{ ...sectionTitle, marginBottom: 4 }}>Portfolio</div>
-        <div
-          style={{ font: 'var(--text-caption)', color: 'var(--muted)', marginBottom: 10 }}
-          title={`Every project by status${hasSupplyOnly ? ', grouped by scope' : ''}. The Complete bar reads closed out (solid) then received, not closed (light) — each package is measured against its own last stage, 🔩 installed or 📍 on site. Hover the bar for the counts.`}
-        >
-          Every project by status{hasSupplyOnly ? ', grouped by scope' : ''} · the Complete bar is <strong>closed out</strong> (solid) then <strong>received</strong> (light)
-        </div>
-        <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'auto', background: 'var(--canvas)' }}>
+      {/* -------------------------------------------------- 6. Portfolio, full width */}
+      <Band label="Portfolio">
+        <SectionHead
+          title={`Every project by status${hasSupplyOnly ? ', grouped by scope' : ''}`}
+          caption={<>The Complete bar reads <strong>closed out</strong> (solid) then <strong>received, not closed</strong> (light) · hover it for the counts</>}
+          captionTitle={`Every project by status${hasSupplyOnly ? ', grouped by scope' : ''}. The Complete bar reads closed out (solid) then received, not closed (light) — each package is measured against its own last stage, 🔩 installed or 📍 on site.`}
+        />
+        <div style={{ ...card, overflow: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: 'var(--surface-soft)' }}>
@@ -1549,9 +1725,6 @@ export function OverviewScreen() {
               </tr>
             </thead>
             <tbody>
-              {/* Grouped by the PROJECT's flag (not its packages': a supply-only project
-                  with an install package still lists under SUPPLY ONLY — only the stage
-                  tables split those out). Headers appear only once the mark is in use. */}
               {portfolioSections.map((section) => (
                 <Fragment key={section.title}>
                   {hasSupplyOnly && (
@@ -1562,104 +1735,40 @@ export function OverviewScreen() {
                     </tr>
                   )}
                   {section.rows.map((p) => {
-                const empty = p.items === 0;
-                return (
-                <tr
-                  key={p.project.id}
-                  onClick={() => jumpProject(p.project.id)}
-                  style={{ cursor: 'pointer', background: empty ? 'color-mix(in srgb, var(--status-order-soon) 48%, var(--canvas))' : undefined }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = empty ? 'color-mix(in srgb, var(--status-order-soon) 48%, var(--canvas))' : 'transparent'; }}
-                >
-                  <td style={tdL}>{p.project.name}{empty && <span style={{ font: 'var(--text-caption)', color: 'var(--status-order-soon-ink)', fontWeight: 600, marginLeft: 8 }}>⚠ no items yet</span>}</td>
-                  <td style={{ ...tdN, fontWeight: 600 }}>{p.items}</td>
-                  <td style={{ ...tdN, background: p.orderNow ? 'var(--status-order-now)' : undefined, color: p.orderNow ? 'var(--status-order-now-ink)' : 'var(--muted)', fontWeight: p.orderNow ? 600 : 400 }}>{p.orderNow}</td>
-                  <td style={{ ...tdN, background: p.soon ? 'var(--status-order-soon)' : undefined, color: p.soon ? 'var(--status-order-soon-ink)' : 'var(--muted)' }}>{p.soon}</td>
-                  <td style={{ ...tdN, background: p.needs ? 'var(--status-needs-data)' : undefined, color: p.needs ? 'var(--status-needs-data-ink)' : 'var(--muted)' }}>{p.needs}</td>
-                  <td style={{ ...tdN, color: 'var(--muted)' }}>{p.planned}</td>
-                  <td style={{ ...tdN, color: p.ordered ? 'var(--status-ordered-ink)' : 'var(--muted)' }}>{p.ordered}</td>
-                  <td style={{ ...tdN, background: p.partial ? 'var(--status-partial)' : undefined, color: p.partial ? 'var(--status-partial-ink)' : 'var(--muted)' }}>{p.partial}</td>
-                  <td style={{ ...tdL }}>
-                    {/* Each package is measured against ITS OWN closing stage (installed,
-                        or on-site when it's supply only), so a mixed project still reads
-                        on one bar. Denominator = every item, OFCI included: owner-furnished
-                        material is still installed by us (that's the "CI" in OFCI). */}
-                    <InstallBar
-                      closed={p.closed}
-                      awaiting={p.awaiting}
-                      total={p.items}
-                      title={`${p.closed} closed out · ${p.awaiting} received, not closed · ${p.items} items`}
-                    />
-                  </td>
-                </tr>
-                );
+                    const empty = p.items === 0;
+                    return (
+                      <tr
+                        key={p.project.id}
+                        onClick={() => jumpProject(p.project.id)}
+                        style={{ cursor: 'pointer', background: empty ? 'color-mix(in srgb, var(--status-order-soon) 48%, var(--canvas))' : undefined }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = empty ? 'color-mix(in srgb, var(--status-order-soon) 48%, var(--canvas))' : 'transparent'; }}
+                      >
+                        <td style={tdL}>{p.project.name}{empty && <span style={{ font: 'var(--text-caption)', color: 'var(--warn-ink)', fontWeight: 600, marginLeft: 8 }}>⚠ no items yet</span>}</td>
+                        <td style={{ ...tdN, fontWeight: 600 }}>{p.items}</td>
+                        <td style={{ ...tdN, background: p.orderNow ? 'var(--status-order-now)' : undefined, color: p.orderNow ? 'var(--status-order-now-ink)' : 'var(--muted)', fontWeight: p.orderNow ? 600 : 400 }}>{p.orderNow}</td>
+                        <td style={{ ...tdN, background: p.soon ? 'var(--status-order-soon)' : undefined, color: p.soon ? 'var(--status-order-soon-ink)' : 'var(--muted)' }}>{p.soon}</td>
+                        <td style={{ ...tdN, background: p.needs ? 'var(--status-needs-data)' : undefined, color: p.needs ? 'var(--status-needs-data-ink)' : 'var(--muted)' }}>{p.needs}</td>
+                        <td style={{ ...tdN, color: 'var(--muted)' }}>{p.planned}</td>
+                        <td style={{ ...tdN, color: p.ordered ? 'var(--status-ordered-ink)' : 'var(--muted)' }}>{p.ordered}</td>
+                        <td style={{ ...tdN, background: p.partial ? 'var(--status-partial)' : undefined, color: p.partial ? 'var(--status-partial-ink)' : 'var(--muted)' }}>{p.partial}</td>
+                        <td style={{ ...tdL }}>
+                          <InstallBar
+                            closed={p.closed}
+                            awaiting={p.awaiting}
+                            total={p.items}
+                            title={`${p.closed} closed out · ${p.awaiting} received, not closed · ${p.items} items`}
+                          />
+                        </td>
+                      </tr>
+                    );
                   })}
                 </Fragment>
               ))}
             </tbody>
           </table>
         </div>
-      </div>
-
-      <div style={{ flex: '1 1 460px', minWidth: 340, display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-          <div style={sectionTitle}>🏗 Delivery and installation status</div>
-          <span style={{ flex: 1 }} />
-          {/* Pending / All narrows the TABLE's rows — it says nothing about a mosaic that
-              charts the whole scope by design, so it only appears with the table. */}
-          {installView === 'table' && (
-            <>
-              <Button size="sm" variant={stagePending ? 'primary' : 'secondary'} onClick={() => setStagePending(true)} style={{ padding: '5px 10px' }}>Still open</Button>
-              <Button size="sm" variant={!stagePending ? 'primary' : 'secondary'} onClick={() => setStagePending(false)} style={{ padding: '5px 10px' }}>All packages</Button>
-            </>
-          )}
-          <Button size="sm" variant={installView === 'mosaic' ? 'primary' : 'secondary'} onClick={() => setInstallView('mosaic')} style={{ padding: '5px 10px' }}>▦ Mosaic</Button>
-          <Button size="sm" variant={installView === 'table' ? 'primary' : 'secondary'} onClick={() => setInstallView('table')} style={{ padding: '5px 10px' }}>▤ Detailed</Button>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-          <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', flex: 1 }}>
-            {installView === 'mosaic'
-              ? 'Every project, one bar per package — solid is closed out: 🔩 installed, or 📍 on site where we only supply. Click a bar to open the package, a badge for its list.'
-              : 'Material already in hand, by project › work package — both scopes, each package measured against its own finish line. Waiting counts days since it was received; click an item count for the per-item list.'}
-          </div>
-          {installView === 'table' && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={stageByProject.length === 0}
-              onClick={() => {
-                const target = !allStageCollapsed;
-                setStageCollapsed(Object.fromEntries(stageByProject.map((p) => [p.projectId, target])));
-              }}
-              style={{ padding: '4px 8px', color: 'var(--muted)', whiteSpace: 'nowrap' }}
-            >
-              {allStageCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
-            </Button>
-          )}
-        </div>
-        {installView === 'mosaic' ? (
-          <InstallMosaic
-            cards={mosaic}
-            empty="No work packages with items yet — the mosaic fills in as material is added and published."
-            onJumpProject={jumpProject}
-            onJumpItem={jumpToItem}
-            onBadgeDrill={(projectId, key) => setBadgeDrill({ projectId, key })}
-          />
-        ) : (
-          <StageTable
-            blocks={stageByProject}
-            collapsed={stageCollapsed}
-            onToggle={toggleStage}
-            onJumpProject={jumpProject}
-            onJumpItem={jumpToItem}
-            onDrill={(g) => setDrillKey(g.key)}
-            empty={stagePending ? 'Nothing open — every received item reached its finish line.' : 'No material received yet.'}
-          />
-        )}
-      </div>
-      </div>
-      </div>
+      </Band>
 
       {drillGroup && (
         <PackageDrillModal group={drillGroup} onClose={() => setDrillKey(null)} onJumpItem={jumpToItem} />
@@ -1670,3 +1779,4 @@ export function OverviewScreen() {
     </div>
   );
 }
+

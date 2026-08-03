@@ -402,10 +402,38 @@
   cursor: default;
 }
 
+/* ============================================ riel de indicadores (Overview, lote 62) */
+/* Los siete gauges del tablero son botones —cada uno abre su lista— y no tenían ningún
+ * estado: la caja bordeada es la del GRUPO, así que la celda no tiene contorno propio que
+ * iluminar. `filter` y `outline` son las dos propiedades que ningún inline del componente
+ * declara: el 🔴 conserva su relleno rojo del semáforo y aun así responde. `outline-offset`
+ * negativo porque el foco se dibuja DENTRO de la celda. */
+.ov-gauge {
+  transition: filter 120ms ease;
+}
+.ov-gauge:hover {
+  filter: brightness(0.96);
+}
+.ov-gauge:active {
+  filter: brightness(0.92);
+}
+.ov-gauge:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: -3px;
+}
+/* Igual que en `.btn`: sobre canvas oscuro bajar el brillo no se ve, hay que subirlo. */
+:root[data-theme='dark'] .ov-gauge:hover {
+  filter: brightness(1.2);
+}
+:root[data-theme='dark'] .ov-gauge:active {
+  filter: brightness(1.32);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .btn,
   .icon-btn,
   .chip-btn,
+  .ov-gauge,
   .swatch-btn,
   .menu-item {
     transition: none;
