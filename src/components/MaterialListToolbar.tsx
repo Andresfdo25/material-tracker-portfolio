@@ -312,21 +312,25 @@ export function MaterialListToolbar({
         <div className="findbar">
           <div className="findbar__row">
             {!client && (
-              <div className="toolgroup toolgroup--on-canvas toolgroup--inline">
-                <span className="toolgroup__label">Search</span>
-                <div className="toolgroup__row">
-                  <input
-                    className="search-input"
-                    value={search}
-                    onChange={(e) => onSearch(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Escape') onSearch(''); }}
-                    placeholder="🔎 Description, vendor, PO#, notes…"
-                    title="Filters every package by description, vendor, PO# or notes (Esc clears)"
-                  />
-                </div>
-              </div>
+              // No label: the placeholder already says what it is, and the row now shares
+              // space with the status badges (they used to own a sub-row of their own, 40px
+              // of height that above the grid are rows of data no longer visible).
+              <input
+                className="search-input"
+                value={search}
+                onChange={(e) => onSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') onSearch(''); }}
+                placeholder="🔎 Description, vendor, PO#, notes…"
+                title="Filters every package by description, vendor, PO# or notes (Esc clears)"
+              />
             )}
-            <span style={{ flex: 1, minWidth: 0 }} />
+            {!client && (
+              <StatusFilterBar
+                counts={statusCounts} filter={filter} onToggle={onToggleFilter} onClear={onClearFilter}
+                lateCount={lateCount} lateOnly={lateOnly} onToggleLate={onToggleLate}
+              />
+            )}
+            {client && <span style={{ flex: 1, minWidth: 0 }} />}
             <Toolgroup label="List view" onCanvas inline>
               <Button variant="secondary" size="sm" style={toolBtn} onClick={onCollapseAll}>
                 {allCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
@@ -340,14 +344,6 @@ export function MaterialListToolbar({
               )}
             </Toolgroup>
           </div>
-          {!client && (
-            <div className="findbar__row findbar__row--sub">
-              <StatusFilterBar
-                counts={statusCounts} filter={filter} onToggle={onToggleFilter} onClear={onClearFilter}
-                lateCount={lateCount} lateOnly={lateOnly} onToggleLate={onToggleLate}
-              />
-            </div>
-          )}
           {filtering && (
             <div className="findbar__summary">
               <span>

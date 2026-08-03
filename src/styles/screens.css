@@ -145,7 +145,7 @@
  * able to change them, and an inline style would swallow that. */
 .search-input {
   height: 32px;
-  width: 220px;
+  width: 184px;
   padding: 0 11px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-pill);
