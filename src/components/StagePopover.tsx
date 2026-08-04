@@ -5,13 +5,13 @@
 //               Sibling of FieldMeasurePopover.
 //   'header'  — the 🔩 icon in the "Delivery / Installation" column header: applies to
 //               the selected rows, or to the whole package when nothing is selected.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { itemStage, logDrivesStage, prefixCompare, STAGE_META } from '../store/logic';
 import type { ItemStage, MaterialItem, WorkPackage } from '../store/types';
 import { Button } from './ds/Button';
 import { Select } from './ds/Select';
-import { anchorBelow } from './uiScale';
+import { anchorBelow, localRect, localViewport } from './uiScale';
 
 interface StageChoice {
   value: ItemStage;
@@ -40,6 +40,10 @@ export function StagePopover(props: {
   /** header mode: this package is supply only, so 🔩 Installed isn't on the menu.
    * In toolbar mode the scope comes from the package picked inside the popover. */
   supplyOnly?: boolean;
+  /** toolbar mode: the PROJECT is supply only — the fallback for packages that carry no
+   * flag of their own (closesAtSite: package flag wins, project's is the default). It
+   * also drives the pill label: a supply-only project gets "📍 Delivery only". */
+  projectSupplyOnly?: boolean;
   /** toolbar mode: pick the package here. */
   packages?: WorkPackage[];
   itemsOf?: (wpId: string) => MaterialItem[];
@@ -54,6 +58,7 @@ export function StagePopover(props: {
   const ref = useRef<HTMLSpanElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
+  const btnRectRef = useRef<ReturnType<typeof localRect> | null>(null);
   const [pos, setPos] = useState({ top: 0, left: 0 });
 
   useEffect(() => {
@@ -97,17 +102,43 @@ export function StagePopover(props: {
   };
 
   const toggle = () => {
+    btnRectRef.current = localRect(btnRef.current!);
     setPos(anchorBelow(btnRef.current!, toolbar ? 350 : 320));
     setDate('');
     if (toolbar) setWpId('');
     setOpen((o) => !o);
   };
 
-  // Supply only: our scope ends at the jobsite, so 🔩 Installed isn't offered and the
-  // on-site hint changes to say it closes the lifecycle. Toolbar mode reads the scope off
-  // the package chosen in the dropdown, so the menu re-shapes as you switch packages.
-  const supplyOnly = toolbar ? !!sel?.supplyOnly : !!props.supplyOnly;
-  const choices = supplyOnly ? CHOICES.filter((c) => c.value !== 'installed') : CHOICES;
+  // Same flip RowMenu uses: once the panel has rendered, if it spills past the viewport
+  // bottom (the 🔩 of the LAST work package opens near the fold) it goes above the
+  // button — or clamps — instead of hiding its buttons off-screen.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const pop = popRef.current, r = btnRectRef.current;
+    if (!pop || !r) return;
+    const h = pop.offsetHeight;
+    const { vh } = localViewport();
+    let top = r.bottom + 4;
+    if (top + h > vh - 8) {
+      const above = r.top - h - 4;
+      top = above >= 8 ? above : Math.max(8, vh - h - 8);
+    }
+    setPos((p) => (p.top === top ? p : { ...p, top }));
+    // wpId/stage re-shape the panel (toolbar dropdown, per-stage hint), so the flip
+    // re-measures when they change too — not only on open.
+  }, [open, wpId, stage]);
+
+  // Supply only: our scope ends at the jobsite, so the menu shrinks to the delivery
+  // moves — 🔩 Installed isn't offered (it never applies) and neither is 🏭 In warehouse:
+  // warehouse / from-stock is a rare detour that lives in the ITEM modal only, never in
+  // a global setter (PM rule). The on-site hint changes to say it closes the lifecycle.
+  // Toolbar mode reads the scope off the package chosen in the dropdown — with the
+  // project's flag as the fallback, same as closesAtSite — so the menu re-shapes as you
+  // switch packages.
+  const supplyOnly = toolbar
+    ? !!(sel ? (sel.supplyOnly ?? props.projectSupplyOnly) : props.projectSupplyOnly)
+    : !!props.supplyOnly;
+  const choices = supplyOnly ? CHOICES.filter((c) => c.value !== 'installed' && c.value !== 'warehouse') : CHOICES;
   const chosen = choices.find((c) => c.value === stage) ?? choices[choices.length - 1];
   const hint = supplyOnly && chosen.value === 'on-site'
     ? 'Delivered to the jobsite — supply only, so this closes the item lifecycle.'
@@ -139,8 +170,10 @@ export function StagePopover(props: {
     borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--hairline)', borderRadius: 'var(--radius-lg)',
     background: 'var(--canvas)', color: 'var(--ink)', font: 'var(--text-body)', fontWeight: 500, whiteSpace: 'nowrap',
   };
+  // The toolbar pill's label follows the PROJECT, not the package picked inside: in a
+  // supply-only project there is no installation half at all, so the pill says so.
   const title = toolbar
-    ? 'Register Delivery / Installation for a work package'
+    ? props.projectSupplyOnly ? 'Register Delivery for a work package' : 'Register Delivery / Installation for a work package'
     : supplyOnly ? 'Set delivery stage' : 'Set delivery / installation stage';
 
   return (
@@ -155,7 +188,7 @@ export function StagePopover(props: {
         className={toolbar ? 'btn' : `icon-btn${open ? ' is-on' : ''}`}
         style={toolbar ? toolbarStyle : undefined}
       >
-        {toolbar ? '🔩 Delivery / Installation' : supplyOnly ? '📍' : '🔩'}
+        {toolbar ? (props.projectSupplyOnly ? '📍 Delivery only' : '🔩 Delivery / Installation') : supplyOnly ? '📍' : '🔩'}
       </button>
       {open && createPortal(
         // Portaled to <body>, same reasoning as RowMenu (CLAUDE.md trampa): the sticky

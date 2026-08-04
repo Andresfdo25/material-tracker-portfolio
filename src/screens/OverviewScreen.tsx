@@ -3,7 +3,7 @@
 // by project → work package with item counts. All read published report snapshots.
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useApp } from '../store/useApp';
-import { awaitingInstall, backorderQty, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, fieldMeasurePending, fmtLong, fmtMD, fmtMDY, groupByPackage, hasOpenBackorder, installUrgency, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, packageReadiness, parseISO, pendingInstallQty, projectClosesAtSite, readinessMark, readinessRank, stageMoves, submittalBlockers, today, totalQty, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type PkgReadiness, type StageMoves, type WaitSeverity } from '../store/logic';
+import { awaitingInstall, backorderQty, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, distinctWindowCount, fieldMeasurePending, fmtLong, fmtMD, fmtMDY, groupByPackage, hasOpenBackorder, installUrgency, installWindow, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, packageReadiness, parseISO, pendingInstallQty, projectClosesAtSite, readinessMark, readinessRank, stageMoves, submittalBlockers, today, totalQty, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type PkgReadiness, type StageMoves, type WaitSeverity } from '../store/logic';
 import type { ComputedItem, ItemStage, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
 import { StatusBadge } from '../components/ds/StatusBadge';
 import { Button } from '../components/ds/Button';
@@ -1788,6 +1788,15 @@ export function OverviewScreen() {
     }, target);
   };
 
+  // The install-window section of the same modal (§9.4) — against the LIVE draft, like
+  // everything else the modal reads, and applies+publishes in the same gesture.
+  const pkgModalItems = pkgModalPkg ? enriched.filter((x) => x.pkg.id === pkgModalPkg.id).map((x) => x.i) : [];
+  const applyPkgWindow = (next: { start: string; end: string }) => {
+    if (!pkgModalPkg) return;
+    actions.bulkEditItems(pkgModalItems.map((i) => i.id), { installStart: next.start, installEnd: next.end });
+    actions.savePackageToReport(pkgModalPkg.id);
+  };
+
   // ---- The quick edit (lote 64): fill in the data the board is counting ----
   // Values come off the DRAFT (`x.i`), not the report — they're what the fields are about
   // to patch. The LIST, though, is chosen by the published status, which is what the board
@@ -2284,6 +2293,10 @@ export function OverviewScreen() {
           wpLabel={pkgModalPkg.label}
           supplyOnly={pkgModalSupplyOnly}
           rows={pkgRows}
+          itemCount={pkgModalItems.length}
+          pkgWindow={installWindow(pkgModalItems)}
+          windowDistinct={distinctWindowCount(pkgModalItems)}
+          onApplyWindow={applyPkgWindow}
           onClose={() => { if (!datePrompt) setPkgModal(null); }}
           onJumpItem={(itemId) => jumpToItem(pkgModal.projectId, itemId)}
           onJumpPackage={() => { setPkgModal(null); jumpToItem(pkgModal.projectId, pkgRows[0]?.itemId ?? ''); }}

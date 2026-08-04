@@ -13,11 +13,12 @@
 // What this adds over the 🏭 gauge window is the START of the cycle: this package can
 // have items that haven't arrived yet, so the first column of buttons is 🏭 received —
 // the gauge window only lists material already in hand, a different question.
-import { type CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { fmtMDY, STAGE_META } from '../store/logic';
 import type { ItemStage } from '../store/types';
 import { StageMoveButtons, type MoveTarget } from './StageMoveButtons';
-import type { StageMoves, InstallUrgency } from '../store/logic';
+import type { StageMoves, InstallUrgency, InstallWindow } from '../store/logic';
+import { InstallWindowFields } from './InstallWindowFields';
 import { Button } from './ds/Button';
 import { Modal } from './ds/Modal';
 import { card, td, th } from './ds/overviewTable';
@@ -41,11 +42,20 @@ export interface PackageItemRow {
 const tdL: CSSProperties = { ...td, textAlign: 'left', font: 'var(--text-body)' };
 const thL: CSSProperties = { ...th, textAlign: 'left' };
 
-export function PackageCloseOutModal({ projectName, wpLabel, supplyOnly, rows, onClose, onJumpItem, onJumpPackage, onMove }: {
+export function PackageCloseOutModal({ projectName, wpLabel, supplyOnly, rows, itemCount, pkgWindow, windowDistinct, onApplyWindow, onClose, onJumpItem, onJumpPackage, onMove }: {
   projectName: string;
   wpLabel: string;
   supplyOnly: boolean;
   rows: PackageItemRow[];
+  /** Every item of the package (rows are the published ones) — the schedule's scope. */
+  itemCount: number;
+  /** The package's install-window aggregate, from the LIVE draft (installWindow). */
+  pkgWindow: InstallWindow;
+  /** distinctWindowCount — how many different windows the package's items carry. */
+  windowDistinct: number;
+  /** §9.4 — the screen writes { installStart, installEnd } to every item and publishes,
+   * same edit-then-publish gesture as every other Overview write. */
+  onApplyWindow: (next: { start: string; end: string }) => void;
   onClose: () => void;
   onJumpItem: (itemId: string) => void;
   /** Everything this window cannot do — notes, quantities, a second partial — is one
@@ -55,6 +65,11 @@ export function PackageCloseOutModal({ projectName, wpLabel, supplyOnly, rows, o
 }) {
   const closed = rows.filter((r) => r.closed).length;
   const cols = 6;
+  // The schedule's working copy — the modal mounts on open, so this initializer reads
+  // the current aggregate exactly once. Empty when the package's windows disagree
+  // (mixed): guessing one of several dates would lie.
+  const [win, setWin] = useState({ start: windowDistinct === 1 ? pkgWindow.start : '', end: windowDistinct === 1 ? pkgWindow.end : '' });
+  const canApplyWindow = itemCount > 0 && (!!win.start || !!win.end || windowDistinct > 0);
   return (
     <Modal title={<span>{projectName} · {wpLabel}</span>} onClose={onClose} width={880}>
       <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', marginBottom: 10 }}>
@@ -68,6 +83,27 @@ export function PackageCloseOutModal({ projectName, wpLabel, supplyOnly, rows, o
           Open in Material List ›
         </Button>
       </div>
+      {/* §9.4 — the package-scope second door for the planned install window (the first is
+          the 🛠 column-header popover on the Material List). Supply-only packages have no
+          installation phase at all (§4.5), so the section isn't rendered there. A PLAN:
+          it never touches installed / installedDate. */}
+      {!supplyOnly && (
+        <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', background: 'var(--canvas)', padding: '10px 12px', marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ font: 'var(--text-caption)', fontWeight: 700, color: 'var(--title)', letterSpacing: 0.3 }}>INSTALLATION SCHEDULE</div>
+          <div style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}>
+            {windowDistinct === 0 ? 'No dates'
+              : windowDistinct === 1 ? 'Current window shown — Apply overwrites it.'
+                : `⚠ ${windowDistinct} different windows — saving overwrites all.`}
+          </div>
+          <InstallWindowFields start={win.start} end={win.end} onChange={setWin} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ flex: 1, font: 'var(--text-caption)', color: 'var(--muted)' }}>
+              Applies to all {itemCount} item{itemCount === 1 ? '' : 's'} in this package and publishes — Undo is available right after.
+            </span>
+            <Button variant="primary" size="sm" disabled={!canApplyWindow} onClick={() => onApplyWindow(win)}>Apply</Button>
+          </div>
+        </div>
+      )}
       <div style={{ ...card, overflow: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>

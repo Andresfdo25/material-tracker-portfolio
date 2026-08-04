@@ -21,7 +21,7 @@ import { Fragment, useState, type CSSProperties } from 'react';
 import { useApp } from '../store/useApp';
 import {
   backorderQty, closesAtSite, daysWaiting, DELIVERY_KIND_META, deliveryTotals, fmtMDY,
-  installCap, installUrgency, isOfci, itemStage, logDrivesStage, pendingInstallQty,
+  installCap, installDateOf, installUrgency, isOfci, itemStage, logDrivesStage, pendingInstallQty,
   STAGE_META, today, totalQty,
 } from '../store/logic';
 import type { DeliveryKind, ItemStage, MaterialItem } from '../store/types';
@@ -30,6 +30,7 @@ import { Button } from './ds/Button';
 import { TextInput } from './ds/TextInput';
 import { Banner } from './ds/Banner';
 import { Select } from './ds/Select';
+import { InstallWindowFields } from './InstallWindowFields';
 
 const STAGE_ORDER: ItemStage[] = ['pending', 'warehouse', 'on-site', 'installed'];
 /** Movements offered in the warehouse section, in the order they happen. */
@@ -177,10 +178,14 @@ export function BreakdownDeliveryModal({ item, onClose }: { item: MaterialItem; 
     }
     if (supplyOnly && stage === 'on-site') return { tone: 'site', text: `📍 On site ${item.siteDate ? fmtMDY(item.siteDate) : ''} — supply only, lifecycle closed.` };
     if (stage === 'pending') return null;
-    if (urgency === 'overdue') return { tone: 'bad', text: `⚠ On-Site Req. date was ${fmtMDY(item.onsite)} — it should be ${supplyOnly ? 'on site' : 'installed'} by now.` };
+    // The date urgency was measured against (§7.5): the planned install end when the item
+    // carries a window, the On-Site Req. fallback otherwise — print exactly that one.
+    const iDate = installDateOf(item);
+    const planned = !!item.installEnd;
+    if (urgency === 'overdue') return { tone: 'bad', text: planned ? `⚠ Install by ${fmtMDY(iDate)} — it should be installed by now.` : `⚠ On-Site Req. date was ${fmtMDY(iDate)} — it should be ${supplyOnly ? 'on site' : 'installed'} by now.` };
     if (urgency === 'unscheduled') return { tone: 'warn', text: '❔ No On-Site Req. date — this item has no schedule. Set one so it shows on the timeline.' };
-    if (urgency === 'due-soon') return { tone: 'warn', text: `🟠 Needed on site ${fmtMDY(item.onsite)} — release it from the warehouse now.` };
-    return { tone: 'plain', text: `Needed on site ${fmtMDY(item.onsite)}.` };
+    if (urgency === 'due-soon') return { tone: 'warn', text: planned ? `🟠 Install by ${fmtMDY(iDate)} — release it from the warehouse now.` : `🟠 Needed on site ${fmtMDY(iDate)} — release it from the warehouse now.` };
+    return { tone: 'plain', text: planned ? `Install by ${fmtMDY(iDate)}.` : `Needed on site ${fmtMDY(iDate)}.` };
   };
   const un = urgencyNote();
   const urgencyInk = un?.tone === 'bad' ? 'var(--status-order-now-ink)' : un?.tone === 'warn' ? 'var(--status-order-soon-ink)'
@@ -201,6 +206,21 @@ export function BreakdownDeliveryModal({ item, onClose }: { item: MaterialItem; 
 
   const sectionTitle = (text: React.ReactNode) => (
     <div style={{ font: 'var(--text-caption)', fontWeight: 700, color: 'var(--title)', letterSpacing: 0.3 }}>{text}</div>
+  );
+
+  /* The PLAN half of the cycle: when the crew is scheduled to put it up. It never moves
+   * the RECORD (installed / installedDate / installations), and 🔩 never stamps these
+   * dates — applyItemPatch has no cascade between them. Supply-only packages have no
+   * installation phase at all (§4.5), so the row simply isn't rendered there. */
+  const scheduleRow = !supplyOnly && (
+    <div style={{ borderTop: '1px solid var(--hairline)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {sectionTitle('INSTALLATION SCHEDULE')}
+      <InstallWindowFields
+        start={item.installStart ?? ''}
+        end={item.installEnd ?? ''}
+        onChange={(v) => actions.editItem(item.id, { installStart: v.start, installEnd: v.end })}
+      />
+    </div>
   );
 
   /* The two halves of the cycle sit side by side and read left to right — delivery gives
@@ -453,9 +473,12 @@ export function BreakdownDeliveryModal({ item, onClose }: { item: MaterialItem; 
               : urgency === 'unscheduled'
                 ? '❔ No On-Site Req. date — nothing says when this has to be in the wall.'
                 : urgency === 'overdue'
-                  ? `⚠ On-Site Req. date was ${fmtMDY(item.onsite)} — it should be installed by now.`
-                  : `${urgency === 'due-soon' ? '🟠 ' : ''}Needed on site ${fmtMDY(item.onsite)}.`}
+                  ? `⚠ ${item.installEnd ? `Install by ${fmtMDY(item.installEnd)}` : `On-Site Req. date was ${fmtMDY(item.onsite)}`} — it should be installed by now.`
+                  : `${urgency === 'due-soon' ? '🟠 ' : ''}${item.installEnd ? `Install by ${fmtMDY(item.installEnd)}` : `Needed on site ${fmtMDY(item.onsite)}`}.`}
           </div>
+          {/* OFCI is never supply-only in practice, but `scheduleRow` still gates on it —
+              we install owner-furnished material, so the plan belongs here too. */}
+          {scheduleRow}
         </>
       )}
       {/* An item marked OFCI after entries were already logged: the log would own the
@@ -665,6 +688,7 @@ export function BreakdownDeliveryModal({ item, onClose }: { item: MaterialItem; 
                       : 'Nothing has arrived yet — register the delivery on the left and this side opens up.'}
                   </div>
                 )}
+                {scheduleRow}
               </div>
             </div>
 

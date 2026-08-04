@@ -5,7 +5,7 @@ import { useRef, useState } from 'react';
 import { useApp } from '../../store/useApp';
 import {
   awaitingInstall, computeItem, daysLate, daysWaiting, deliveryWatch, fmtDays, fmtMDY,
-  installUrgency, isFromStock, isOfci, isPartial, isPartiallyInstalled, itemStage, logDrivesStage, STAGE_META,
+  installDateOf, installUrgency, isFromStock, isOfci, isPartial, isPartiallyInstalled, itemStage, logDrivesStage, STAGE_META,
   submittalBlockers, SUBMITTALS, UNITS,
 } from '../../store/logic';
 import type { Cfg, MaterialItem, WorkPackage } from '../../store/types';
@@ -13,6 +13,7 @@ import { StatusBadge } from '../ds/StatusBadge';
 import { VendorInput } from '../VendorInput';
 import { BulkSetPopover } from '../BulkSetPopover';
 import { StagePopover } from '../StagePopover';
+import { InstallWindowPopover } from '../InstallWindowPopover';
 import { SubmittalCoverModal } from '../SubmittalCoverModal';
 import { BulkSubmittalsModal } from '../BreakdownSubmittalsModal';
 import { BulkEditBar } from './BulkEditBar';
@@ -106,6 +107,9 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
   // Of the rows the 🔩 header popover would hit, how many follow their delivery log —
   // those are refused by stagePatch, so the popover says so before applying.
   const stageSkipped = items.filter((it) => targetIds.includes(it.id) && logDrivesStage(it.deliveries)).length;
+  // The rows the 🛠 install-window popover writes and reads its state line from — the
+  // same scope the 🔩 StagePopover hits.
+  const targetItems = items.filter((it) => targetIds.includes(it.id));
 
   const show = (key: string): boolean => {
     if (client) return !INTERNAL_ONLY.has(key);
@@ -318,6 +322,17 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                         note={stageScopeNote}
                         supplyOnly={supplyOnly}
                         onApply={(stage, date) => actions.setItemStage(targetIds, stage, date)}
+                      />
+                    )}
+                    {/* The PLAN next to the RECORD: 🛠 schedules the install window, 🔩
+                        moves the actual stage. Supply-only packages have no installation
+                        phase (§4.5), so the trigger isn't rendered there. */}
+                    {editable && !supplyOnly && (
+                      <InstallWindowPopover
+                        items={targetItems}
+                        note={scopeNote}
+                        onApply={(v) => applyBulk({ installStart: v.start, installEnd: v.end })}
+                        onClear={() => applyBulk({ installStart: '', installEnd: '' })}
                       />
                     )}
                   </Hdr>
@@ -685,12 +700,16 @@ export function MaterialGrid({ items, packages, cfg, client, readOnly, hidden, o
                         const st = itemStage(it);
                         const urg = installUrgency(it, cfg);
                         const waited = daysWaiting(it);
+                        // The date the urgency is measured against (§7.5): the planned
+                        // install end when set, the On-Site Req. fallback otherwise.
+                        const iDate = installDateOf(it);
+                        const iWhat = it.installEnd ? 'Install by' : 'On-Site Req.';
                         return (
                           <span
                             title={[
                               `${STAGE_META[st].label}${waited != null ? ` — ${waited} day${waited === 1 ? '' : 's'} since received` : ''}`,
-                              it.onsite ? `On-Site Req. ${fmtMDY(it.onsite)}` : 'No On-Site Req. date set',
-                              urg === 'overdue' ? '⚠ On-Site date passed — not installed yet' : urg === 'due-soon' ? '🟠 Needed on site soon — release it from the warehouse' : '',
+                              iDate ? `${iWhat} ${fmtMDY(iDate)}` : 'No On-Site Req. date set',
+                              urg === 'overdue' ? `⚠ ${it.installEnd ? 'Install' : 'On-Site'} date passed — not installed yet` : urg === 'due-soon' ? '🟠 Needed on site soon — release it from the warehouse' : '',
                             ].filter(Boolean).join(' · ')}
                             style={{ fontSize: 14, lineHeight: 1, cursor: 'help', flexShrink: 0, filter: urg === 'overdue' ? 'none' : undefined }}
                           >

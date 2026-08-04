@@ -236,6 +236,11 @@ export function MaterialListScreen() {
     }
   };
 
+  // Toolbar 🛠 pill: one install window across every package with an installation phase
+  // (supply-only is excluded — the toolbar shows the popover only when this is non-empty,
+  // and its confirm carries the wording). The window is a PLAN: it never touches stage.
+  const installScopeIds = packages.filter((p) => !closesAtSite(p, project)).flatMap((p) => itemsOf(p.id).map((it) => it.id));
+
   // Only packages that would actually print are offered in the export dialog — PrintReport
   // skips an empty one, so selecting it would promise a section that never appears.
   const exportPkgOptions: ExportPkgOption[] = packages
@@ -309,6 +314,8 @@ export function MaterialListScreen() {
         onFieldMeasure={(ids, iso) => actions.bulkEditItems(ids, { fieldDate: iso })}
         onFieldMeasureClear={(ids) => actions.bulkEditItems(ids, { fieldDate: '' })}
         onStage={(stage, date, ids) => { if (ids?.length) actions.setItemStage(ids, stage, date); }}
+        onInstallWindow={(v) => { if (installScopeIds.length) actions.bulkEditItems(installScopeIds, { installStart: v.start, installEnd: v.end }); }}
+        onInstallWindowClear={() => { if (installScopeIds.length) actions.bulkEditItems(installScopeIds, { installStart: '', installEnd: '' }); }}
       />
 
       {/* The filter summary ("Showing 4 of 11…") moved inside the search strip (lote

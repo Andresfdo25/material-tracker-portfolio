@@ -23,7 +23,7 @@
 // fixed header measured ~200px and half were buttons unused while reading.
 import type { ReactNode } from 'react';
 import type { ExportMode, ItemStage, ItemStatus, MaterialItem, Project, WorkPackage } from '../store/types';
-import { fmtLong, today } from '../store/logic';
+import { fmtLong, closesAtSite, today } from '../store/logic';
 import { Button } from './ds/Button';
 import { StatusBadge } from './ds/StatusBadge';
 import { ProjectSwitcher } from './ProjectSwitcher';
@@ -32,6 +32,7 @@ import { ThresholdsPopover } from './ThresholdsPopover';
 import { BulkSetPopover } from './BulkSetPopover';
 import { FieldMeasurePopover } from './FieldMeasurePopover';
 import { StagePopover } from './StagePopover';
+import { InstallWindowPopover } from './InstallWindowPopover';
 import { ManageColumnsMenu } from './ManageColumnsMenu';
 import { StatusFilterBar } from './StatusFilterBar';
 
@@ -99,6 +100,7 @@ export function MaterialListToolbar({
   allCollapsed, onCollapseAll, hiddenCols, onToggleCol, onResetCols,
   onSelectProject, onCloseProject, onDeleteProject, onAddWorkPackage, onImportMaterials,
   onQuickAdd, onExportPdf, onSaveAll, onGlobalOnsite, onFieldMeasure, onFieldMeasureClear, onStage,
+  onInstallWindow, onInstallWindowClear,
 }: {
   project: Project;
   /** Active (non-archived) projects, for the switcher. */
@@ -141,10 +143,19 @@ export function MaterialListToolbar({
   onFieldMeasure: (ids: string[], iso: string) => void;
   onFieldMeasureClear: (ids: string[]) => void;
   onStage: (stage: ItemStage, date: string, ids?: string[]) => void;
+  /** The 🛠 toolbar pill (split off 🔩): one install window across the install scope. */
+  onInstallWindow: (next: { start: string; end: string }) => void;
+  onInstallWindowClear: () => void;
 }) {
   const editable = !client && !readOnly;
   const q = search.trim();
   const filtering = filter.length > 0 || lateOnly || q !== '';
+
+  // The 🛠 pill's scope: every package that HAS an installation phase. Supply-only
+  // closes at the dock (closesAtSite), so a global schedule has nothing to say to it —
+  // those items are left out, and the note says so.
+  const installPkgs = packages.filter((p) => !closesAtSite(p, project));
+  const installItems = installPkgs.flatMap((p) => itemsOf(p.id));
 
   return (
     // Two siblings, not one wrapper: only the bottom strip is sticky, and a `sticky`
@@ -227,6 +238,19 @@ export function MaterialListToolbar({
                 itemsOf={itemsOf}
                 onApply={onStage}
               />
+              {/* Split off the 🔩 pill: 🔩 moves the RECORD (stage), 🛠 sets the PLAN
+                  (install window) — one window across every installable package. Hidden
+                  when the whole project is supply-only (no installation phase at all). */}
+              {installItems.length > 0 && (
+                <InstallWindowPopover
+                  mode="toolbar"
+                  items={installItems}
+                  scopeName={`all ${installPkgs.length} package${installPkgs.length === 1 ? '' : 's'} in "${project.name}"`}
+                  note={`Sets the same window on ${installItems.length} item${installItems.length === 1 ? '' : 's'} across ${installPkgs.length} package${installPkgs.length === 1 ? '' : 's'}.${itemCount > installItems.length ? ' Supply-only packages are skipped — their scope closes at the dock.' : ''}`}
+                  onApply={onInstallWindow}
+                  onClear={onInstallWindowClear}
+                />
+              )}
             </Toolgroup>
 
             {/* The two right-hand groups travel together inside their own row: when the
