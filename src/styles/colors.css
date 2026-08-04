@@ -125,6 +125,24 @@
   --mos-flag-done: #0f6e56;
   --mos-flag-stalled: #a32d2d;
 
+  /* ---- Install-bar palette (lote 74) — the SIX user-selectable colours of the
+   * timeline's install bars. One global choice, a UI pref (`installBarColor` in
+   * localStorage), never domain data. The FILL is always a theme-flat pastel that already
+   * exists (`--status-installed`, `--mos-*-soft`); what lives here is the INK — border of
+   * the bar and text-tone of its family — because an ink is text-on-surface and needs its
+   * dark value (the light inks measure 1.4–2.0:1 on the dark canvas; same trap that
+   * created `--alert-ink`). Measured, both themes, against the lane's two backgrounds
+   * (`--canvas` and the `--surface-soft` zebra): every light value ≥ 7.6:1 in claro and
+   * every dark value ≥ 4.8:1 en oscuro. The ALARM (overdue / installing on material not
+   * on site) always overrides the chosen colour with `--alert-ink` — a preference must
+   * never mute it. */
+  --ib-teal-ink: #1d514c;    /* = --status-installed-ink (the default, the installed family) */
+  --ib-blue-ink: #0c447c;    /* = --mos-blue-ink */
+  --ib-violet-ink: #3c3489;  /* = --mos-violet-ink */
+  --ib-magenta-ink: #8a2c4b; /* = --mos-magenta-ink */
+  --ib-orange-ink: #8a3418;  /* = --mos-orange-ink */
+  --ib-green-ink: #0c5c48;   /* = --mos-aqua-ink */
+
   --input-highlight: #fff3b0;
 
   /* ---- Highlighter row flags (Material List) — fluorescent marker tones ---- */
@@ -202,6 +220,17 @@
    * hues above do not: they paint bars, and a bar keeps its identity in both themes. */
   --mos-flag-done: #6fd7b4;
   --mos-flag-stalled: #ff9b9b;
+
+  /* Install-bar inks en oscuro (lote 74) — cada una aclarada hasta pasar AA contra el
+   * canvas #1b2233 y la zebra #232c40 (valores medidos al lado). Tres reusan tintes que
+   * dark ya tenía (--brand-teal, el --link de dark, --mos-flag-done de dark, el --title
+   * de dark); magenta y orange son los únicos hexes nuevos, y solo existen acá. */
+  --ib-teal-ink: #64dcd3;    /* 9.6:1 canvas · 8.5:1 zebra */
+  --ib-blue-ink: #6399ee;    /* 5.5:1 canvas · 4.9:1 zebra */
+  --ib-violet-ink: #d8ccff;  /* 10.6:1 canvas · 9.3:1 zebra */
+  --ib-magenta-ink: #f0a6c8; /* 8.3:1 canvas · 7.3:1 zebra */
+  --ib-orange-ink: #f0a37a;  /* 7.7:1 canvas · 6.8:1 zebra */
+  --ib-green-ink: #6fd7b4;   /* 9.1:1 canvas · 8.0:1 zebra */
 
   /* Link blue is TEXT on --canvas, so it travels with the neutrals, not with the status
    * pastels: #1b61c9 measures 2.7:1 on #1b2233 — under AA (4.5:1) and under even the 3:1

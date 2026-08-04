@@ -95,6 +95,12 @@ export interface ReportSnapshot {
    * from the `installed` boolean ("all of it") when it doesn't. Published: the client
    * report prints "3/10 installed" in the Status column. */
   installedQty: number;
+  /** Planned installation window — a PLAN (schedule), not a record: nothing writes it
+   * from `installed`/`installedDate` and nothing writes those from it. ISO date,
+   * '' = unset; both bounds are optional and a single bound is a valid window. */
+  installStart?: string;
+  /** ISO date, '' = unset — the far edge of the planned install window. */
+  installEnd?: string;
   /** Field measurements site-visit date ('' = none) — one date per work package, set
    * from the toolbar popover; shows as the orange ◆ milestone on the Overview timeline. */
   fieldDate: string;

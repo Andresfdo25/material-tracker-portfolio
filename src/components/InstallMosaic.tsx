@@ -20,7 +20,7 @@
 // The aggregation is not here: `mosaicCards` in logic.ts is pure and tested, this file
 // only draws it.
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
-import { MOSAIC_BADGE_META, type MosaicBadgeKey, type MosaicCard, type MosaicPackage, type PackageProgressFlag } from '../store/logic';
+import { fmtMD, MOSAIC_BADGE_META, type MosaicBadgeKey, type MosaicCard, type MosaicPackage, type PackageProgressFlag } from '../store/logic';
 
 /** Soft cap on cards per row (ported from the private build's lote 64) — a PM realistically
  * runs a portfolio of a handful to twenty projects, so more ROWS reads better than
@@ -91,6 +91,18 @@ function PackageBar({ pkg, slot, scope, widest, trackW, trackRef, onOpen, openHi
   const barPx = trackW ? Math.max(60, trackW * share) : 0;
   const fits = (frac: number, n: number) => n > 0 && frac >= 0.18 && barPx * frac >= String(n).length * 7 + 8;
   const flag = pkg.flag ? FLAG[pkg.flag] : null;
+  // §7.6 — the planned install window, in the timeline's exact vocabulary: muted outline
+  // tone when planned, the installed-family ink when the crew is up, alarm ink when the
+  // end already passed or the material isn't on site. The colour never travels alone:
+  // the button's title prints the state word, same phrasing as the timeline tooltip.
+  const inst = pkg.install;
+  const instTone = !inst ? '' : inst.overdue || inst.conflict ? 'var(--alert-ink)'
+    : inst.phase === 'installing' ? 'var(--status-installed-ink)' : 'var(--muted)';
+  const instWord = !inst ? '' : inst.overdue ? 'Installation overdue'
+    : inst.conflict ? 'Installing on material not on site'
+      : inst.phase === 'installing' ? 'Installing' : 'Install planned';
+  const instCaption = !inst ? '' : inst.start && inst.end ? `${fmtMD(inst.start)} → ${fmtMD(inst.end)}`
+    : inst.end ? `by ${fmtMD(inst.end)}` : `starts ${fmtMD(inst.start)}`;
   const seg = (frac: number, bg: string, ink: string): CSSProperties => ({
     width: `${frac * 100}%`, height: '100%', background: bg, color: ink,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -104,7 +116,7 @@ function PackageBar({ pkg, slot, scope, widest, trackW, trackRef, onOpen, openHi
       type="button"
       className="mos-row"
       onClick={onOpen}
-      title={`${pkg.wpLabel}\n${counts}${pkg.inHand ? `\n${pkg.inHand} received so far` : ''}\n\n${openHint}`}
+      title={`${pkg.wpLabel}\n${counts}${pkg.inHand ? `\n${pkg.inHand} received so far` : ''}${inst ? `\n🛠 ${instCaption} · ${instWord}${inst.mixed ? ' · items have different windows' : ''}` : ''}\n\n${openHint}`}
     >
       <span className="mos-row-name">
         <span className="mos-row-label">{pkg.wpLabel}</span>
@@ -145,6 +157,13 @@ function PackageBar({ pkg, slot, scope, widest, trackW, trackRef, onOpen, openHi
           {pkg.pct}%
         </span>
       </span>
+      {/* The window caption — nothing at all when the package has no install story (§7.6):
+          no window, closed, or supply-only. */}
+      {inst && (
+        <span style={{ font: 'var(--text-mono-sm)', fontWeight: 600, color: instTone, whiteSpace: 'nowrap' }}>
+          🛠 {instCaption}
+        </span>
+      )}
     </button>
   );
 }

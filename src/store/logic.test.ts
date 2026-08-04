@@ -12,9 +12,9 @@ import type { Db, DeliveryRecord, MaterialItem, Project, ReportSnapshot, WorkPac
 import { VENDORS_SEED } from '../seed/catalogs';
 import {
   addDays, addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, awaitingInstall, backorderQty, closesAtSite, closeVia, closingStage,
-  computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, detourOf, diffDays, fieldMeasurePending, fmtDays, fmtFileStamp, fmtLong, fmtMD, fmtMDY,
-  hasOpenBackorder, INSTALL_DEFAULTS, installCap, isClosed, isPartial, isPartiallyInstalled, itemDirty, itemStage, logDrivesStage, matchVendor,
-  migrateDb, mosaicCards, normalizeUm, normQty, packageProgressFlag, packageReadiness, parseISO, pendingInstallQty, prefixCompare, progressPct, projectClosesAtSite, READINESS_META, readinessMark, removeDeliveryFrom,
+  computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, detourOf, diffDays, distinctWindowCount, fieldMeasurePending, fmtDays, fmtFileStamp, fmtLong, fmtMD, fmtMDY,
+  hasOpenBackorder, INSTALL_DEFAULTS, INSTALL_WINDOW_DEFAULTS, installAllReceived, installBarGeometry, installCap, installConflict, installDateOf, installUrgency, installWindow, installWindowSummary, isClosed, isPartial, isPartiallyInstalled, itemDirty, itemStage, logDrivesStage, matchVendor,
+  migrateDb, mosaicCards, normalizeUm, normQty, packagePhase, packageProgressFlag, packageReadiness, parseISO, pendingInstallQty, prefixCompare, progressPct, projectClosesAtSite, READINESS_META, readinessMark, removeDeliveryFrom,
   removeInstallFrom, REPORT_FIELDS, snapshot, splitDescription, stableSlot, stagePatch, SUBMITTAL_DEFAULTS, submittalApproved,
   submittalBlockers, today, toISO, totalQty,
 } from './logic';
@@ -36,7 +36,7 @@ function snap(over: Partial<ReportSnapshot> = {}): ReportSnapshot {
     description: 'Grab bars, 42" stainless', qty: 10, um: 'ea', vendor: 'Northline Fixtures Co.', lead: '', onsite: '',
     submittal: 'Approved', delivered: false, ordered: false, po: '', poDate: '', shipDate: '',
     shipDateManual: false, notes: '', receivedQty: 0, receivedDate: '', fieldDate: '',
-    ...INSTALL_DEFAULTS, ...SUBMITTAL_DEFAULTS, ...over,
+    ...INSTALL_DEFAULTS, ...INSTALL_WINDOW_DEFAULTS, ...SUBMITTAL_DEFAULTS, ...over,
   };
 }
 
@@ -114,6 +114,22 @@ describe('migrateDb — a database saved by an old version must come back whole'
     expect(rep.installed).toBe(false);
     expect(rep.receivedQty).toBe(0);
     expect(rep.qty).toBe(22);
+  });
+
+  it('defaults the planned install window on every item and every report snapshot', () => {
+    out.items.forEach((it) => {
+      expect(it.installStart).toBe('');
+      expect(it.installEnd).toBe('');
+    });
+    expect(out.items[0].report!.installStart).toBe('');
+    expect(out.items[0].report!.installEnd).toBe('');
+    // A window the old base somehow carried is kept, not wiped.
+    const kept = migrateDb(structuredClone({
+      ...legacy,
+      items: [{ ...legacy.items[0], installStart: '2026-03-01', installEnd: '2026-03-20' }],
+    } as unknown as Db)).items[0];
+    expect(kept.installStart).toBe('2026-03-01');
+    expect(kept.installEnd).toBe('2026-03-20');
   });
 
   it('defaults supply-only to false on projects and packages', () => {
@@ -883,9 +899,20 @@ describe('stagePatch — one writer, one set of rules', () => {
 describe('the delivery log as the other stage writer', () => {
   const ten = () => item({ qty: 10 });
 
-  it('completing the ordered QTY receives the item and stamps the date', () => {
+  it('completing the ordered QTY receives the item and stamps the DELIVERY date, not today', () => {
     const out = addDeliveryTo(ten(), { qty: 10, note: 'INV-1', date: '2026-07-10' });
-    expect(out).toMatchObject({ delivered: true, receivedQty: 10, receivedDate: TODAY });
+    expect(out).toMatchObject({ delivered: true, receivedQty: 10, receivedDate: '2026-07-10' });
+  });
+
+  it('the completing entry of a partial delivery stamps ITS date', () => {
+    const a = addDeliveryTo(ten(), { qty: 6, note: '', date: '2026-07-09' });
+    expect(a.delivered).toBe(false);
+    const b = addDeliveryTo(a, { qty: 4, note: '', date: '2026-07-12' });
+    expect(b).toMatchObject({ delivered: true, receivedDate: '2026-07-12' });
+  });
+
+  it('an entry without a date still stamps today', () => {
+    expect(addDeliveryTo(ten(), { qty: 10, note: '', date: '' }).receivedDate).toBe(TODAY);
   });
 
   it('a partial entry never un-receives an item the PM ticked by hand', () => {
@@ -1117,6 +1144,44 @@ describe('install quantities — the log owns the number, or the boolean does', 
   });
 });
 
+describe('installAllReceived — the timeline bulk install (lote 75)', () => {
+  const received = (over: Partial<MaterialItem> = {}) => item({ qty: 10, receivedQty: 10, delivered: true, receivedDate: '2026-07-05', ...over });
+
+  it('logs everything that arrived, dated as given, and closes at the QTY', () => {
+    const out = installAllReceived(received(), '2026-07-15');
+    expect(out).toMatchObject({ installedQty: 10, installed: true, installedDate: '2026-07-15' });
+    expect(out.installations).toEqual([{ qty: 10, note: '', date: '2026-07-15' }]);
+  });
+
+  it('installs only what arrived when the receipt is partial', () => {
+    const out = installAllReceived(item({ qty: 10, receivedQty: 4, delivered: false }), '2026-07-15');
+    expect(out).toMatchObject({ installedQty: 4, installed: false });
+    expect(out.installations[0]).toEqual({ qty: 4, note: '', date: '2026-07-15' });
+  });
+
+  it('tops up to what arrived when some of it is already installed', () => {
+    const partial = addInstallTo(received(), { qty: 3, note: 'crew A', date: '2026-07-10' });
+    const out = installAllReceived(partial, '2026-07-15');
+    expect(out).toMatchObject({ installedQty: 10, installed: true, installedDate: '2026-07-15' });
+    expect(out.installations).toHaveLength(2);
+  });
+
+  it('returns the item untouched when nothing is on site', () => {
+    const it = item({ qty: 10, receivedQty: 0, delivered: false });
+    expect(installAllReceived(it, '2026-07-15')).toBe(it);
+  });
+
+  it('returns the item untouched when there is nothing left to install', () => {
+    const done = addInstallTo(received(), { qty: 10, note: '', date: '2026-07-10' });
+    expect(installAllReceived(done, '2026-07-15')).toBe(done);
+  });
+
+  it('returns the item untouched when there are no quantities', () => {
+    const it = item({ qty: 'lot', receivedQty: 0, delivered: true });
+    expect(installAllReceived(it, '2026-07-15')).toBe(it);
+  });
+});
+
 /* ============================================== mosaicCards and its helpers (Overview) */
 
 describe('progressPct — 0% and 100% are verdicts, never rounding', () => {
@@ -1270,5 +1335,301 @@ describe('mosaicCards — the pure aggregation behind the Overview mosaic', () =
       [mi({ id: 'i1', delivered: true, receivedQty: 1, qty: 1 })],
     );
     expect(cards[0].slot).toBe(stableSlot('p1', 6));
+  });
+});
+
+/* ===== 20. the planned install window — installWindow / packagePhase / installConflict
+ * The window is a PLAN (schedule): it never writes the install record and the record
+ * never writes it. Storage is per-item; everything below is the derived aggregate. */
+
+describe('installWindow — the package window aggregated from its items', () => {
+  it('reads an empty package as no window at all', () => {
+    expect(installWindow([])).toEqual({ start: '', end: '', mixed: false });
+  });
+
+  it('reads a package nobody scheduled as no window at all', () => {
+    expect(installWindow([item(), item()])).toEqual({ start: '', end: '', mixed: false });
+  });
+
+  it('takes the latest of differing installEnds and flags the disagreement', () => {
+    const w = installWindow([
+      item({ installEnd: '2026-08-10' }),
+      item({ installEnd: '2026-08-25' }),
+    ]);
+    expect(w.end).toBe('2026-08-25');
+    expect(w.mixed).toBe(true);
+  });
+
+  it('takes the earliest of differing installStarts and flags the disagreement', () => {
+    const w = installWindow([
+      item({ installStart: '2026-08-01' }),
+      item({ installStart: '2026-07-20' }),
+    ]);
+    expect(w.start).toBe('2026-07-20');
+    expect(w.mixed).toBe(true);
+  });
+
+  it('is not mixed when every voter agrees', () => {
+    const w = installWindow([
+      item({ installStart: '2026-08-01', installEnd: '2026-08-15' }),
+      item({ installStart: '2026-08-01', installEnd: '2026-08-15' }),
+    ]);
+    expect(w).toEqual({ start: '2026-08-01', end: '2026-08-15', mixed: false });
+  });
+
+  it('lets an item with no date on a bound simply not vote on it', () => {
+    const w = installWindow([
+      item({ installStart: '2026-08-01' }),
+      item({ installEnd: '2026-08-15' }),
+      item(),
+    ]);
+    expect(w).toEqual({ start: '2026-08-01', end: '2026-08-15', mixed: false });
+  });
+});
+
+describe('packagePhase — where the package sits against its plan', () => {
+  const ON_SITE = { po: 'PO-1', delivered: true, receivedQty: 10, siteDate: '2026-07-01' };
+  const STARTED = { installStart: '2026-07-14', installEnd: '2026-07-30' };
+
+  it('is closed at the installed ceiling, window or not', () => {
+    const installed = item({ ...ON_SITE, installed: true, installedDate: '2026-07-10', installedQty: 10 });
+    expect(packagePhase([installed], false, TODAY)).toBe('closed');
+    expect(packagePhase([item({ ...installed, ...STARTED })], false, TODAY)).toBe('closed');
+  });
+
+  it('is closed at the on-site ceiling when the package is supply-only', () => {
+    expect(packagePhase([item(ON_SITE)], true, TODAY)).toBe('closed');
+  });
+
+  it('is procurement while nobody set a window', () => {
+    expect(packagePhase([item(ON_SITE)], false, TODAY)).toBe('procurement');
+    expect(packagePhase([], false, TODAY)).toBe('procurement');
+  });
+
+  it('is install-planned while the whole window is in the future', () => {
+    const future = item({ ...ON_SITE, installStart: '2026-07-16', installEnd: '2026-07-30' });
+    expect(packagePhase([future], false, TODAY)).toBe('install-planned');
+  });
+
+  it('is installing once the start has arrived', () => {
+    expect(packagePhase([item({ ...ON_SITE, ...STARTED })], false, TODAY)).toBe('installing');
+  });
+
+  it('counts an end-only window already past as started', () => {
+    expect(packagePhase([item({ ...ON_SITE, installEnd: '2026-07-15' })], false, TODAY)).toBe('installing');
+    expect(packagePhase([item({ ...ON_SITE, installEnd: '2026-07-01' })], false, TODAY)).toBe('installing');
+  });
+
+  it('counts an end-only window in the future as planned', () => {
+    expect(packagePhase([item({ ...ON_SITE, installEnd: '2026-07-16' })], false, TODAY)).toBe('install-planned');
+  });
+
+  it('never lets readiness gate the phase: readiness none + started window = installing', () => {
+    expect(packageReadiness([item(STARTED)], false)).toBe('none');
+    expect(packagePhase([item(STARTED)], false, TODAY)).toBe('installing');
+  });
+
+  it('ignores the window outright on a supply-only package', () => {
+    const items = [item({ ...STARTED })];
+    expect(packagePhase(items, true, TODAY)).toBe('procurement');
+    expect(installConflict(items, true, TODAY)).toBe(false);
+  });
+});
+
+describe('installConflict — installation started on material not on site', () => {
+  const STARTED = { installStart: '2026-07-14', installEnd: '2026-07-30' };
+
+  it('fires while the crew is up and nothing has reached the floor', () => {
+    const inWarehouse = item({ po: 'PO-1', delivered: true, receivedQty: 10, ...STARTED });
+    expect(packagePhase([inWarehouse], false, TODAY)).toBe('installing');
+    expect(installConflict([inWarehouse], false, TODAY)).toBe(true);
+  });
+
+  it('does not fire once everything is on site', () => {
+    const onSite = item({ po: 'PO-1', delivered: true, receivedQty: 10, siteDate: '2026-07-01', ...STARTED });
+    expect(packageReadiness([onSite], false)).toBe('on-site');
+    expect(installConflict([onSite], false, TODAY)).toBe(false);
+  });
+
+  it('does not fire while the window is still planned', () => {
+    const planned = item({ installStart: '2026-07-16', installEnd: '2026-07-30' });
+    expect(packagePhase([planned], false, TODAY)).toBe('install-planned');
+    expect(installConflict([planned], false, TODAY)).toBe(false);
+  });
+});
+
+describe('itemDirty — the window is published state', () => {
+  it('marks an item whose window is not in the report dirty, and clean once published', () => {
+    const scheduled = item({ installStart: '2026-08-01', installEnd: '2026-08-15', report: snap() });
+    expect(itemDirty(scheduled)).toBe(true);
+    const published = item({
+      installStart: '2026-08-01', installEnd: '2026-08-15',
+      report: snap({ installStart: '2026-08-01', installEnd: '2026-08-15' }),
+    });
+    expect(itemDirty(published)).toBe(false);
+  });
+});
+
+describe('distinctWindowCount — how many different windows the ⚠ warning names', () => {
+  it('counts nothing when no item carries a bound', () => {
+    expect(distinctWindowCount([])).toBe(0);
+    expect(distinctWindowCount([item(), item()])).toBe(0);
+  });
+
+  it('counts one when every voter agrees, and ignores items without dates', () => {
+    expect(distinctWindowCount([
+      item({ installStart: '2026-08-01', installEnd: '2026-08-15' }),
+      item({ installStart: '2026-08-01', installEnd: '2026-08-15' }),
+      item(),
+    ])).toBe(1);
+  });
+
+  it('counts each differing bound pair as its own window', () => {
+    expect(distinctWindowCount([
+      item({ installStart: '2026-08-01', installEnd: '2026-08-15' }),
+      item({ installStart: '2026-08-01', installEnd: '2026-08-20' }),
+      item({ installStart: '2026-08-01' }),
+    ])).toBe(3);
+  });
+});
+
+describe('installWindowSummary — the one-line read-out under the pickers', () => {
+  it('reads both bounds as a range with its day count', () => {
+    expect(installWindowSummary('2026-08-01', '2026-08-15')).toBe('Scheduled 08/01 → 08/15 · 14 days');
+    expect(installWindowSummary('2026-08-01', '2026-08-02')).toBe('Scheduled 08/01 → 08/02 · 1 day');
+  });
+
+  it('reads an end-only window as the primary plan and a start-only one as a start', () => {
+    expect(installWindowSummary('', '2026-08-15')).toBe('Scheduled by 08/15');
+    expect(installWindowSummary('2026-08-01', '')).toBe('Starts 08/01');
+  });
+
+  it('reads an empty pair as not scheduled', () => {
+    expect(installWindowSummary('', '')).toBe('Not scheduled');
+  });
+});
+
+describe('installBarGeometry — which dates the timeline bar draws between', () => {
+  const T = '2026-07-15';
+
+  it('draws a future window at its true extent', () => {
+    expect(installBarGeometry({ start: '2026-08-01', end: '2026-08-15' }, T))
+      .toEqual({ leftIso: '2026-08-01', rightIso: '2026-08-15', overdue: false, single: false });
+  });
+
+  it('pins the left edge to today once the window has started', () => {
+    expect(installBarGeometry({ start: '2026-07-10', end: '2026-08-15' }, T))
+      .toEqual({ leftIso: '2026-07-15', rightIso: '2026-08-15', overdue: false, single: false });
+    expect(installBarGeometry({ start: '2026-07-15', end: '2026-08-15' }, T))
+      .toEqual({ leftIso: '2026-07-15', rightIso: '2026-08-15', overdue: false, single: false });
+  });
+
+  it('an expired window on an open package collapses to a 1-day bar pinned at today', () => {
+    expect(installBarGeometry({ start: '2026-07-01', end: '2026-07-10' }, T))
+      .toEqual({ leftIso: '2026-07-15', rightIso: '2026-07-16', overdue: true, single: false });
+  });
+
+  it('a window ending today already draws the pinned 1-day bar', () => {
+    expect(installBarGeometry({ start: '2026-07-10', end: '2026-07-15' }, T))
+      .toEqual({ leftIso: '2026-07-15', rightIso: '2026-07-16', overdue: false, single: false });
+  });
+
+  it('an end-only marker past due pins to today and still reports overdue', () => {
+    expect(installBarGeometry({ start: '', end: '2026-07-10' }, T))
+      .toEqual({ leftIso: '2026-07-15', rightIso: '2026-07-15', overdue: true, single: true });
+    expect(installBarGeometry({ start: '', end: '2026-08-15' }, T))
+      .toEqual({ leftIso: '2026-08-15', rightIso: '2026-08-15', overdue: false, single: true });
+  });
+
+  it('a start-only window is never overdue — nothing was due yet', () => {
+    expect(installBarGeometry({ start: '2026-07-01', end: '' }, T))
+      .toEqual({ leftIso: '2026-07-01', rightIso: '2026-07-01', overdue: false, single: true });
+  });
+});
+
+/* ============== 21. installUrgency against the planned window (spec §7.5) ====
+ * The clock is frozen at 2026-07-15. When the item carries a planned install window,
+ * urgency is measured against `installEnd`; `onsite` is only the fallback proxy. */
+
+describe('installUrgency — measured against installEnd when the item has a window', () => {
+  it('the delivered-three-months-early story: onsite long past, install date future -> not overdue', () => {
+    const r = snap({ delivered: true, receivedDate: '2026-04-15', onsite: '2026-04-15', installEnd: '2026-12-01' });
+    expect(installUrgency(r)).toBe('scheduled');
+  });
+
+  it('a past installEnd is overdue no matter what onsite says', () => {
+    expect(installUrgency(snap({ onsite: '2026-12-31', installEnd: '2026-07-10' }))).toBe('overdue');
+    expect(installUrgency(snap({ onsite: '', installEnd: '2026-07-14' }))).toBe('overdue');
+  });
+
+  it('an installEnd inside the order-soon window is due-soon', () => {
+    expect(installUrgency(snap({ onsite: '2026-12-31', installEnd: '2026-07-15' }))).toBe('due-soon');
+    expect(installUrgency(snap({ onsite: '', installEnd: '2026-07-22' }))).toBe('due-soon');
+    expect(installUrgency(snap({ onsite: '', installEnd: '2026-07-23' }))).toBe('scheduled');
+  });
+
+  it('with no window the fallback is byte-for-byte the old onsite behavior', () => {
+    expect(installUrgency(snap({ onsite: '2026-07-10' }))).toBe('overdue');
+    expect(installUrgency(snap({ onsite: '2026-07-18' }))).toBe('due-soon');
+    expect(installUrgency(snap({ onsite: '2026-12-31' }))).toBe('scheduled');
+    expect(installUrgency(snap({ onsite: '' }))).toBe('unscheduled');
+  });
+});
+
+describe('installDateOf — the one date every screen prints next to the urgency', () => {
+  it('returns installEnd when set, onsite otherwise', () => {
+    expect(installDateOf({ onsite: '2026-04-15', installEnd: '2026-12-01' })).toBe('2026-12-01');
+    expect(installDateOf({ onsite: '2026-04-15', installEnd: '' })).toBe('2026-04-15');
+    expect(installDateOf({ onsite: '', installEnd: '' })).toBe('');
+  });
+});
+
+/* ---- §7.6: the mosaic bar picks up the phase — same story as the timeline install track */
+
+describe('mosaicCards — the per-package install story (§7.6)', () => {
+  function project(over: Partial<Project> = {}): Project {
+    return { id: 'p1', name: 'Project One', gc: '', ...over };
+  }
+  function pkg(over: Partial<WorkPackage> = {}): WorkPackage {
+    return { id: 'wp1', projectId: 'p1', prefix: '10.10', label: 'Toilet accessories', reportSince: null, ...over };
+  }
+  function mi(over: Partial<MaterialItem> = {}): MaterialItem {
+    const base = item({ id: 'i1', wpId: 'wp1', ...over });
+    return { ...base, report: snap(over) };
+  }
+  const RECEIVED = { po: 'PO-1', ordered: true, delivered: true, receivedDate: '2026-07-01' };
+  const cardOf = (rows: MaterialItem[], supplyOnly = false) => mosaicCards([project()], [pkg({ supplyOnly })], rows)[0];
+
+  it('is null when the package has no window — zero story to tell', () => {
+    expect(cardOf([mi(RECEIVED)]).packages[0].install).toBeNull();
+  });
+
+  it('carries a future window as install-planned', () => {
+    const win = { installStart: '2026-08-01', installEnd: '2026-08-15' };
+    const install = cardOf([mi({ ...RECEIVED, ...win })]).packages[0].install;
+    expect(install).toMatchObject({ start: '2026-08-01', end: '2026-08-15', mixed: false, phase: 'install-planned', conflict: false, overdue: false });
+  });
+
+  it('carries a started window as installing, and flags the conflict when nothing is on site', () => {
+    const win = { installStart: '2026-07-10', installEnd: '2026-07-30' };
+    const fighting = cardOf([mi({ ...RECEIVED, ...win })]).packages[0].install;
+    expect(fighting).toMatchObject({ phase: 'installing', conflict: true, overdue: false });
+    const onSite = cardOf([mi({ ...RECEIVED, ...win, siteDate: '2026-07-05' })]).packages[0].install;
+    expect(onSite).toMatchObject({ phase: 'installing', conflict: false });
+  });
+
+  it('flags a window whose end already passed on an open package as overdue', () => {
+    const install = cardOf([mi({ ...RECEIVED, installEnd: '2026-07-10' })]).packages[0].install;
+    expect(install).toMatchObject({ phase: 'installing', overdue: true });
+  });
+
+  it('says nothing once the package is closed, window or not', () => {
+    const closed = mi({ ...RECEIVED, siteDate: '2026-07-05', installed: true, installedDate: '2026-07-08', installStart: '2026-07-10', installEnd: '2026-07-30' });
+    expect(cardOf([closed]).packages[0].install).toBeNull();
+  });
+
+  it('says nothing for a supply-only package, window or not (§4.5)', () => {
+    const install = cardOf([mi({ ...RECEIVED, installStart: '2026-07-10', installEnd: '2026-07-30' })], true).packages[0].install;
+    expect(install).toBeNull();
   });
 });

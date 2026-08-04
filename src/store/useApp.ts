@@ -59,6 +59,10 @@ export interface Actions {
    * the item as installed, the same way a delivery entry that reaches it marks received. */
   addInstall: (itemId: string, qty: number, note: string, date?: string) => void;
   removeInstall: (itemId: string, index: number) => void;
+  /** The timeline's "mark package installed" (lote 75): logs the installation of
+   * everything received on each listed item, dated today. Items with nothing on site
+   * are skipped. Does NOT publish — the package dirties, same as the Material List. */
+  installPackage: (itemIds: string[]) => void;
   /** Restore from a backup file — replaces the ENTIRE database (migrated for defaults). */
   replaceDb: (next: Db) => void;
 }

@@ -153,6 +153,11 @@ export function pendingSubmittalApproval(it: ReportSnapshot): boolean {
 export const INSTALL_DEFAULTS = {
   siteDate: '', installed: false, installedDate: '', installedQty: 0,
 } satisfies Pick<ReportSnapshot, 'siteDate' | 'installed' | 'installedDate' | 'installedQty'>;
+/** Planned-install-window defaults — spread into every new/migrated item and reset on
+ * duplicate, exactly like INSTALL_DEFAULTS above (the window is a plan, not a record). */
+export const INSTALL_WINDOW_DEFAULTS = {
+  installStart: '', installEnd: '',
+} satisfies Pick<ReportSnapshot, 'installStart' | 'installEnd'>;
 
 export const UNITS = ['ea', 'sf', 'lf', 'sy', 'ls', 'gal', 'set', 'sheet', 'in'];
 
@@ -198,7 +203,7 @@ export function matchVendor(raw: string, vendors: string[]): string {
 export const REPORT_FIELDS: (keyof ReportSnapshot)[] = [
   'description', 'qty', 'um', 'vendor', 'lead', 'onsite',
   'submittal', 'delivered', 'ordered', 'po', 'poDate', 'shipDate', 'shipDateManual', 'notes', 'receivedQty', 'receivedDate', 'fieldDate',
-  'siteDate', 'installed', 'installedDate', 'installedQty',
+  'siteDate', 'installed', 'installedDate', 'installedQty', 'installStart', 'installEnd',
   'sampleReq', 'sampleStatus', 'shopReq', 'shopStatus', 'fieldReq', 'fieldStatus', 'otherReq', 'otherStatus', 'otherNote',
 ];
 
@@ -591,6 +596,114 @@ export function readinessRank(r: PkgReadiness): number {
   return READINESS_LADDER.indexOf(r);
 }
 
+/* ------------------------------------------------------- the planned install window
+ * `installStart` / `installEnd` are a PLAN (schedule), not a record — nothing derives
+ * them from `installed`/`installedDate` and nothing derives those from them. Storage is
+ * per-item; the package window is derived here as an aggregate, the same way readiness
+ * is. A supply-only package has no installation phase at all (§4.5): the data may exist
+ * on its items but `packagePhase`/`installConflict` ignore it, so the renderer can call
+ * these unconditionally and never draw a bar. */
+export interface InstallWindow { start: string; end: string; mixed: boolean }
+type WindowR = Pick<ReportSnapshot, 'installStart' | 'installEnd'>;
+/** The package's window from its items': earliest start and latest end among the voters
+ * (an item with '' on a bound simply does not vote on it). `mixed` flags disagreement —
+ * two different starts or two different ends — so the UI can say "dates differ". */
+export function installWindow(items: WindowR[]): InstallWindow {
+  const starts = new Set<string>();
+  const ends = new Set<string>();
+  items.forEach((it) => {
+    if (it.installStart) starts.add(it.installStart);
+    if (it.installEnd) ends.add(it.installEnd);
+  });
+  const s = [...starts].sort(); // string compare is chronological for ISO dates
+  const e = [...ends].sort();
+  return { start: s[0] ?? '', end: e[e.length - 1] ?? '', mixed: s.length > 1 || e.length > 1 };
+}
+
+/** How many DIFFERENT windows a package's items carry — each bound pair as one value, so
+ * "one start, two ends" counts two. Items with no bound at all don't vote. The header
+ * popover warns "⚠ N different windows" off this. */
+export function distinctWindowCount(items: WindowR[]): number {
+  const seen = new Set<string>();
+  items.forEach((it) => {
+    if (it.installStart || it.installEnd) seen.add(`${it.installStart ?? ''}|${it.installEnd ?? ''}`);
+  });
+  return seen.size;
+}
+
+/** The one-line read-out under the two pickers, shared by both entry doors
+ * (InstallWindowFields). The END is the primary bound (an end-only window is a complete
+ * plan), so "Scheduled by" names it; the start is the optional refinement. */
+export function installWindowSummary(start: string, end: string): string {
+  if (start && end) {
+    const n = diffDays(end, start);
+    return `Scheduled ${fmtMD(start)} → ${fmtMD(end)} · ${n} day${n === 1 ? '' : 's'}`;
+  }
+  if (end) return `Scheduled by ${fmtMD(end)}`;
+  if (start) return `Starts ${fmtMD(start)}`;
+  return 'Not scheduled';
+}
+
+export interface InstallBarGeom { leftIso: string; rightIso: string; overdue: boolean; single: boolean }
+/** Bar geometry for the timeline's install row, in ISO dates — the screen's `frac`
+ * clamps them into the 6-month window, so this only decides WHICH dates those are:
+ *  · a started window's left edge pins to TODAY (a bar that begins at today reads "in
+ *    progress");
+ *  · the END clamps too (lote 75, PM's call): an open package whose window ran out
+ *    keeps a 1-DAY BAR pinned at today until it closes — the bar shrinks a day at a
+ *    time and then holds, so "still not installed" never scrolls off into the past.
+ *    `overdue` is still REPORTED (the mosaic and the closing clock read it) but the
+ *    timeline bar no longer paints it in alarm — red on the bar is the conflict's
+ *    (installing on material not on site), and Alerts keep their own red;
+ *  · a single bound is a marker, not a bar (`single`). An end-only marker past due
+ *    pins to today; a start-only one never is overdue (nothing was due yet). */
+export function installBarGeometry(w: Pick<InstallWindow, 'start' | 'end'>, todayStr: string): InstallBarGeom {
+  const { start, end } = w;
+  const overdue = !!end && end < todayStr;
+  if (start && end) {
+    const floor = toISO(addDays(parseISO(todayStr), 1));
+    return { leftIso: start >= todayStr ? start : todayStr, rightIso: end >= floor ? end : floor, overdue, single: false };
+  }
+  if (end) {
+    const at = end >= todayStr ? end : todayStr;
+    return { leftIso: at, rightIso: at, overdue, single: true };
+  }
+  return { leftIso: start, rightIso: start, overdue: false, single: true };
+}
+
+export type PackagePhase = 'closed' | 'installing' | 'install-planned' | 'procurement';
+/** Where the package sits against its plan, for the timeline bar. LOAD-BEARING RULE:
+ * readiness never gates the phase — a package with readiness 'none' and a started window
+ * IS 'installing' (that is precisely the case `installConflict` alarms on). `todayStr`
+ * is passed in so the function stays pure. */
+export function packagePhase(
+  items: (StageR & Pick<ReportSnapshot, 'po'> & WindowR)[],
+  supplyOnly: boolean,
+  todayStr: string,
+): PackagePhase {
+  const readiness = packageReadiness(items, supplyOnly);
+  // Ceiling reached: 'installed' — or 'on-site' when the package is supply-only.
+  if (readiness === 'installed' || (supplyOnly && readiness === 'on-site')) return 'closed';
+  if (supplyOnly) return 'procurement'; // no installation phase — the window is ignored
+  const w = installWindow(items);
+  if (!w.start && !w.end) return 'procurement';
+  // An end-only window whose end is today or past counts as started; future, as planned.
+  const started = w.start ? w.start <= todayStr : w.end <= todayStr;
+  return started ? 'installing' : 'install-planned';
+}
+
+/** The "installation started on material not on site" alert: the plan says the crew is
+ * up but the readiness ladder says nothing has reached the floor yet. */
+export function installConflict(
+  items: (StageR & Pick<ReportSnapshot, 'po'> & WindowR)[],
+  supplyOnly: boolean,
+  todayStr: string,
+): boolean {
+  if (supplyOnly) return false; // no installation phase, so nothing to conflict with
+  return packagePhase(items, supplyOnly, todayStr) === 'installing'
+    && readinessRank(packageReadiness(items, supplyOnly)) < readinessRank('on-site');
+}
+
 /** How a readiness tier introduces itself in the timeline tooltip: a ✓ in `token` plus
  * `word`. Lives here rather than in the screen for the usual fast-refresh reason (a .tsx
  * that exports anything but components loses it), beside `STAGE_META` and
@@ -647,14 +760,24 @@ export function closeVia(it: Pick<MaterialItem, 'deliveries' | 'delivered' | 'si
   return null;
 }
 
-/* How urgent it is to get an awaiting-install item to the jobsite, driven by the
- * On-Site Req. date. 'unscheduled' is the case that used to be invisible altogether:
- * computeItem short-circuits on `delivered` BEFORE the needs-data check, so a received
- * item with no On-Site date never showed up anywhere. */
+/* How urgent it is to get an awaiting-install item to the jobsite, driven by the date the
+ * installation is actually planned for: the item's `installEnd` when the package carries
+ * a planned window (spec §7.5 — material delivered three months early with a future
+ * install date is NOT overdue), the On-Site Req. date as the fallback proxy when it
+ * doesn't. 'unscheduled' is the case that used to be invisible altogether: computeItem
+ * short-circuits on `delivered` BEFORE the needs-data check, so a received item with no
+ * date at all never showed up anywhere. */
 export type InstallUrgency = 'overdue' | 'due-soon' | 'scheduled' | 'unscheduled';
-export function installUrgency(it: Pick<ReportSnapshot, 'onsite'>, cfg?: Cfg): InstallUrgency {
-  if (!it.onsite) return 'unscheduled';
-  const days = diffDays(it.onsite, today());
+/** The date `installUrgency` measures against. Exported so every screen PRINTS the same
+ * date the urgency was computed from — a line that says "overdue" next to the fallback
+ * `onsite` while the window says otherwise would contradict itself. */
+export function installDateOf(it: Pick<ReportSnapshot, 'onsite' | 'installEnd'>): string {
+  return it.installEnd || it.onsite;
+}
+export function installUrgency(it: Pick<ReportSnapshot, 'onsite' | 'installEnd'>, cfg?: Cfg): InstallUrgency {
+  const date = installDateOf(it);
+  if (!date) return 'unscheduled';
+  const days = diffDays(date, today());
   if (days < 0) return 'overdue';
   if (days <= (cfg?.window ?? 7)) return 'due-soon';
   return 'scheduled';
@@ -859,6 +982,10 @@ export interface MosaicPackage {
   flag: PackageProgressFlag;
   /** Deep-link target: the first item still short of the closing stage, else the first. */
   itemId: string;
+  /** The planned-install-window story the bar tells (§7.6) — same vocabulary as the
+   * timeline's install row under the project lane. null when there is nothing to tell:
+   * no window, already closed, or supply-only (no installation phase at all, §4.5). */
+  install: (InstallWindow & { phase: PackagePhase; conflict: boolean; overdue: boolean }) | null;
 }
 
 export interface MosaicCard {
@@ -953,6 +1080,19 @@ export function mosaicCards(projects: Project[], packages: WorkPackage[], items:
         wpId: pkg.id, wpLabel: pkg.label, total: rows.length, closed, pending: rows.length - closed,
         ordered, inHand, pct: progressPct(closed, rows.length), flag: packageProgressFlag(closed, inHand, rows.length),
         itemId: target || rows[0].id,
+        // §7.6: the bar picks up the package's phase, so the mosaic and the timeline tell
+        // the same story. Measured on the same published snapshots the counts above use.
+        install: (() => {
+          const snaps = rows.map((it) => it.report!);
+          const phase = packagePhase(snaps, supplyOnly, today());
+          if (phase !== 'installing' && phase !== 'install-planned') return null;
+          const win = installWindow(snaps);
+          return {
+            ...win, phase,
+            conflict: installConflict(snaps, supplyOnly, today()),
+            overdue: installBarGeometry(win, today()).overdue,
+          };
+        })(),
       });
     });
     if (!pkgs.length) return null;
@@ -1121,8 +1261,8 @@ export function applyItemPatch(it: MaterialItem, patch: Partial<MaterialItem>): 
  * cascade inline in AppContext, so a log entry that closed or reopened a delivery got
  * different date stamping and no downstream invalidation compared to a manual write
  * (SPEC-hardening §8). Pure, so the arbitration is testable without React. */
-function withLog(it: MaterialItem, deliveries: DeliveryRecord[], received: number, delivered: boolean): MaterialItem {
-  const next = applyItemPatch({ ...it, deliveries }, { delivered, receivedQty: received });
+function withLog(it: MaterialItem, deliveries: DeliveryRecord[], received: number, delivered: boolean, extra: Partial<MaterialItem> = {}): MaterialItem {
+  const next = applyItemPatch({ ...it, deliveries }, { ...extra, delivered, receivedQty: received });
   return { ...next, siteDate: siteDateFromLog(next, deliveries) };
 }
 /** Register one delivery entry. Reaching the ordered QTY completes the delivery; a
@@ -1133,7 +1273,12 @@ export function addDeliveryTo(it: MaterialItem, entry: DeliveryRecord): Material
   const { received } = deliveryTotals(deliveries);
   const total = totalQty(it);
   const delivered = total != null && received >= total ? true : it.delivered;
-  return withLog(it, deliveries, received, delivered);
+  // The receipt stamp is the day the material showed up — the completing entry's date —
+  // never the day somebody typed it in (the same call lote 64 made for siteDate; the
+  // plain-delivery corner was still stamping "today"). An entry without a date falls
+  // back to today, and an already-stamped receipt is left alone.
+  const stamp = delivered && !it.delivered && !it.receivedDate ? { receivedDate: entry.date || today() } : {};
+  return withLog(it, deliveries, received, delivered, stamp);
 }
 /** Undo one entry. Dropping back below the ordered QTY reopens the delivery — and now
  * that it goes through applyItemPatch, reopening also invalidates what was downstream
@@ -1177,6 +1322,17 @@ export function addInstallTo(it: MaterialItem, entry: InstallRecord): MaterialIt
  * a delivery entry reopens the receipt; undoing the LAST one un-installs outright. */
 export function removeInstallFrom(it: MaterialItem, index: number): MaterialItem {
   return applyItemPatch(it, { installations: it.installations.filter((_, i) => i !== index) });
+}
+
+/** Log the installation of everything that has ARRIVED, in one entry dated `dateStr` —
+ * the timeline's "mark package installed" write (lote 75). Exactly the Material List's
+ * semantics: `addInstallTo` clamps to what is on site and derives `installed` when the
+ * log reaches the QTY. Items with no quantities, nothing received, or nothing left to
+ * install come back UNTOUCHED (identity), so bulk callers can filter on `!==`. */
+export function installAllReceived(it: MaterialItem, dateStr: string): MaterialItem {
+  const room = pendingInstallQty(it);
+  if (room == null || room <= 0) return it;
+  return addInstallTo(it, { qty: room, note: '', date: dateStr });
 }
 
 export function snapshot(it: MaterialItem): ReportSnapshot {
@@ -1226,6 +1382,9 @@ export function migrateDb(raw: Db): Db {
     siteDate: it.siteDate ?? '',
     installed: it.installed ?? false,
     installedDate: it.installedDate ?? '',
+    // The planned install window predates nothing — a legacy item simply had no plan.
+    installStart: it.installStart ?? '',
+    installEnd: it.installEnd ?? '',
     // Lote 44: install quantities. A legacy item that is `installed` had ALL of it up —
     // that is what the boolean has always meant — so the backfill is the whole QTY, not
     // zero, or every closed-out item would suddenly read "0/10 installed".
@@ -1236,6 +1395,7 @@ export function migrateDb(raw: Db): Db {
           ...SUBMITTAL_DEFAULTS, ...INSTALL_DEFAULTS, ...it.report,
           receivedQty: it.report.receivedQty ?? 0, receivedDate: it.report.receivedDate ?? '', fieldDate: it.report.fieldDate ?? '',
           siteDate: it.report.siteDate ?? '', installed: it.report.installed ?? false, installedDate: it.report.installedDate ?? '',
+          installStart: it.report.installStart ?? '', installEnd: it.report.installEnd ?? '',
           installedQty: it.report.installedQty ?? (it.report.installed ? totalQty(it.report) ?? 0 : 0),
         })
       : null,

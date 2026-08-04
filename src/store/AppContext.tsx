@@ -4,7 +4,7 @@
 // and the action types — this module exports only the provider component.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Db, MaterialItem, ViewKey, WorkPackage } from './types';
-import { addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, computeShipDate, DEFAULT_THRESHOLDS, INSTALL_DEFAULTS, migrateDb, normQty, removeDeliveryFrom, removeInstallFrom, snapshot, stagePatch, SUBMITTAL_DEFAULTS, today } from './logic';
+import { addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, computeShipDate, DEFAULT_THRESHOLDS, INSTALL_DEFAULTS, INSTALL_WINDOW_DEFAULTS, installAllReceived, migrateDb, normQty, removeDeliveryFrom, removeInstallFrom, snapshot, stagePatch, SUBMITTAL_DEFAULTS, today } from './logic';
 import { buildDb } from '../seed/demoData';
 import { loadJSON, saveJSON } from './persist';
 import { AppContext, type Actions, type AppContextValue } from './useApp';
@@ -137,7 +137,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             id: 'i_' + Date.now(),
             po: '', poDate: '', shipDate: '', shipDateManual: false,
             delivered: false, ordered: false, receivedQty: 0, deliveries: [], receivedDate: '',
-            siteDate: '', installed: false, installedDate: '', report: null,
+            siteDate: '', installed: false, installedDate: '', ...INSTALL_WINDOW_DEFAULTS, report: null,
           };
           const items = [...d.items];
           items.splice(idx + 1, 0, copy);
@@ -156,7 +156,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               id: 'i_' + Date.now(), wpId, description: '', qty: '', um: 'ea',
               vendor: '', lead: '', onsite: '', submittal: 'Pending', delivered: false,
               ordered: false, po: '', poDate: '', shipDate: '', shipDateManual: false, notes: '',
-              receivedQty: 0, deliveries: [], installations: [], receivedDate: '', fieldDate: '', ...INSTALL_DEFAULTS, ...SUBMITTAL_DEFAULTS, report: null,
+              receivedQty: 0, deliveries: [], installations: [], receivedDate: '', fieldDate: '', ...INSTALL_DEFAULTS, ...INSTALL_WINDOW_DEFAULTS, ...SUBMITTAL_DEFAULTS, report: null,
             },
           ],
         })),
@@ -224,7 +224,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               id: 'i_' + Date.now() + '_' + i, wpId: pkg.id, description: r.name, qty: normQty(r.qty), um: r.um,
               vendor: r.mfr || '', lead: '', onsite: '', submittal: 'Pending', delivered: false,
               ordered: false, po: '', poDate: '', shipDate: '', shipDateManual: false, notes: r.part || '',
-              receivedQty: 0, deliveries: [], installations: [], receivedDate: '', fieldDate: '', ...INSTALL_DEFAULTS, ...SUBMITTAL_DEFAULTS, report: null,
+              receivedQty: 0, deliveries: [], installations: [], receivedDate: '', fieldDate: '', ...INSTALL_DEFAULTS, ...INSTALL_WINDOW_DEFAULTS, ...SUBMITTAL_DEFAULTS, report: null,
             });
           });
           return { ...d, packages, items };
@@ -323,6 +323,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addInstall: (itemId, qty, note, date) =>
         mapItems((it) => (it.id === itemId ? addInstallTo(it, { qty, note, date: date || today() }) : it)),
       removeInstall: (itemId, index) => mapItems((it) => (it.id === itemId ? removeInstallFrom(it, index) : it)),
+      installPackage: (itemIds) =>
+        mapItems((it) => (itemIds.includes(it.id) ? installAllReceived(it, today()) : it)),
       replaceDb: (next) => setDb(migrateDb(next)),
     };
   }, []);

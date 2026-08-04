@@ -35,7 +35,7 @@
 // today and pulsing, and one whose visit is still ahead. Without them the timeline legend
 // would name a marker the board never shows.
 import {
-  addDays, DEFAULT_THRESHOLDS, INSTALL_DEFAULTS, parseISO, snapshot, SUBMITTAL_DEFAULTS, toISO, today,
+  addDays, DEFAULT_THRESHOLDS, INSTALL_DEFAULTS, INSTALL_WINDOW_DEFAULTS, parseISO, snapshot, SUBMITTAL_DEFAULTS, toISO, today,
 } from '../store/logic';
 import type { Db, MaterialItem } from '../store/types';
 import { VENDORS_SEED, WP_CATALOG } from './catalogs';
@@ -57,6 +57,7 @@ function mk(fields: Partial<MaterialItem> & Pick<MaterialItem, 'wpId' | 'descrip
     id: uid('i'), delivered: false, ordered: false, po: '', poDate: '', shipDate: '', shipDateManual: false, notes: '',
     qty: '', um: 'ea', vendor: '', lead: '', onsite: '', submittal: 'Pending', receivedQty: 0, deliveries: [], installations: [], receivedDate: '', fieldDate: '',
     ...INSTALL_DEFAULTS,
+    ...INSTALL_WINDOW_DEFAULTS,
     ...SUBMITTAL_DEFAULTS,
     ...fields,
   } as MaterialItem;
