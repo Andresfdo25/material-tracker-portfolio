@@ -8,14 +8,14 @@
 // The clock is frozen at 2026-07-15 10:00 LOCAL (TZ pinned to UTC-5 in vitest.config.ts)
 // so buy-by cuts and the auto-stamped dates are deterministic.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Db, DeliveryRecord, MaterialItem, ReportSnapshot } from './types';
+import type { Db, DeliveryRecord, MaterialItem, Project, ReportSnapshot, WorkPackage } from './types';
 import { VENDORS_SEED } from '../seed/catalogs';
 import {
-  addDays, addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, awaitingInstall, backorderQty, closesAtSite, closingStage,
-  computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, diffDays, fmtDays, fmtFileStamp, fmtLong, fmtMDY,
+  addDays, addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, awaitingInstall, backorderQty, closesAtSite, closeVia, closingStage,
+  computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, detourOf, diffDays, fieldMeasurePending, fmtDays, fmtFileStamp, fmtLong, fmtMD, fmtMDY,
   hasOpenBackorder, INSTALL_DEFAULTS, installCap, isClosed, isPartial, isPartiallyInstalled, itemDirty, itemStage, logDrivesStage, matchVendor,
-  migrateDb, normalizeUm, normQty, parseISO, pendingInstallQty, prefixCompare, projectClosesAtSite, removeDeliveryFrom,
-  removeInstallFrom, REPORT_FIELDS, snapshot, splitDescription, stagePatch, SUBMITTAL_DEFAULTS, submittalApproved,
+  migrateDb, mosaicCards, normalizeUm, normQty, packageProgressFlag, packageReadiness, parseISO, pendingInstallQty, prefixCompare, progressPct, projectClosesAtSite, READINESS_META, readinessMark, removeDeliveryFrom,
+  removeInstallFrom, REPORT_FIELDS, snapshot, splitDescription, stableSlot, stagePatch, SUBMITTAL_DEFAULTS, submittalApproved,
   submittalBlockers, today, toISO, totalQty,
 } from './logic';
 
@@ -395,6 +395,118 @@ describe('closesAtSite / projectClosesAtSite / isClosed / awaitingInstall', () =
   });
 });
 
+describe('packageReadiness — the furthest stage EVERY item in the package has reached', () => {
+  const bought = (over: Partial<ReportSnapshot> = {}) => snap({ po: 'PO-1', ...over });
+
+  it('is a MIN, not a count: one straggler holds the whole package back', () => {
+    const installed = bought({ delivered: true, installed: true });
+    const warehouse = bought({ delivered: true });
+    expect(packageReadiness([installed, installed])).toBe('installed');
+    expect(packageReadiness([installed, warehouse])).toBe('warehouse');
+  });
+
+  it('walks the whole ladder', () => {
+    expect(packageReadiness([snap()])).toBe('none'); // no PO# yet
+    expect(packageReadiness([bought()])).toBe('ordered');
+    expect(packageReadiness([bought({ delivered: true })])).toBe('warehouse');
+    expect(packageReadiness([bought({ delivered: true, siteDate: '2026-07-10' })])).toBe('on-site');
+    expect(packageReadiness([bought({ delivered: true, installed: true })])).toBe('installed');
+  });
+
+  it('an empty package is not a finished one', () => {
+    expect(packageReadiness([])).toBe('none');
+  });
+
+  it('supply-only tops out at on-site — installing is not ours', () => {
+    const installed = bought({ delivered: true, installed: true });
+    expect(packageReadiness([installed], true)).toBe('on-site');
+    // A supply-only package that mixes "installed" and "on site" is entirely closed, and
+    // both land on the same terminal tier rather than one dragging the other down.
+    expect(packageReadiness([installed, bought({ delivered: true, siteDate: '2026-07-10' })], true)).toBe('on-site');
+  });
+
+  it('OFCI counts as bought but never as received (the stagePatch rule)', () => {
+    // `stagePatch` refuses a receipt on OFCI, so 'ordered' is genuinely its ceiling —
+    // this asserts the tier does not silently promote owner-furnished material.
+    expect(packageReadiness([snap({ po: 'OFCI' })])).toBe('ordered');
+    expect(packageReadiness([snap({ po: 'OFCI', installed: true })])).toBe('installed');
+  });
+
+  it('fmtMD drops the year the heading already carries', () => {
+    expect(fmtMD('2026-07-18')).toBe('07/18');
+    expect(fmtMD('')).toBe(''); // same empty-input contract as fmtMDY
+  });
+
+  it('readinessMark relabels only the one scope-dependent tier', () => {
+    expect(readinessMark('on-site', false)).toEqual(READINESS_META['on-site']);
+    // Reaching the jobsite IS the finish when we only supply, so it earns the terminal
+    // green — the same green 'installed' gets on the other side of the scope.
+    expect(readinessMark('on-site', true)).toEqual({ glyph: '✓', word: 'delivered', token: '--success-border' });
+    expect(readinessMark('installed', false).token).toBe('--success-border');
+  });
+
+  it('"nothing ordered yet" is an answer, not an absence — and it is the alarm rung', () => {
+    const none = readinessMark('none');
+    expect(none.word).toBe('not ordered');
+    expect(none.glyph).toBe('·');
+    expect(none.token).toBe('--alert-on-dark');
+    // Every other rung did clear something, so every other rung ticks.
+    (['ordered', 'warehouse', 'on-site', 'installed'] as const).forEach((r) => {
+      expect(readinessMark(r).glyph).toBe('✓');
+    });
+  });
+
+  it('the five tiers are five DISTINCT colours, all of them theme-flat', () => {
+    // The tooltip sits on --brand-dark, which is never redeclared in the dark block, so a
+    // tier token that IS redeclared would drift off a surface that does not move. Asserting
+    // that against colors.css directly is not available here (vitest stubs CSS imports to
+    // ''), so the invariant is pinned as an allowlist: every token below is declared ONLY
+    // in :root. Adding a tier means checking colors.css by hand and adding it here on
+    // purpose, which is the point.
+    const THEME_FLAT = ['--alert-on-dark', '--status-ordered', '--brand-orange', '--brand-teal', '--success-border'];
+    const tokens = Object.values(READINESS_META).map((m) => m.token);
+    tokens.forEach((t) => expect(THEME_FLAT).toContain(t));
+    // Distinct, because the colour is half of how a tier identifies itself.
+    expect(new Set(tokens).size).toBe(tokens.length);
+  });
+});
+
+describe('closeVia — what closes an item awaiting site/install, against its live draft (lote 63)', () => {
+  const draft = (over: Partial<ReportSnapshot> = {}, deliveries: DeliveryRecord[] = [], installations: { qty: number; note: string; date: string }[] = []) =>
+    ({ ...snap(over), deliveries, installations });
+
+  it('install scope: warehouse releases to on site, on site closes as installed', () => {
+    expect(closeVia(draft({ delivered: true }), false)).toBe('on-site');
+    expect(closeVia(draft({ delivered: true, siteDate: '2026-07-10' }), false)).toBe('installed');
+  });
+
+  it('install scope: already installed has nothing left to close', () => {
+    expect(closeVia(draft({ delivered: false, installed: true }), false)).toBe(null);
+  });
+
+  it('supply-only: warehouse closes straight to on site, on site has nothing left', () => {
+    expect(closeVia(draft({ delivered: true }), true)).toBe('on-site');
+    expect(closeVia(draft({ delivered: true, siteDate: '2026-07-10' }), true)).toBe(null);
+  });
+
+  it('the delivery log owns the stage — a manual close is refused, not offered', () => {
+    const withLog = draft({ delivered: true }, [{ qty: 5, note: '', date: '2026-07-10', kind: 'wh-in' }]);
+    expect(closeVia(withLog, false)).toBe(null);
+    expect(closeVia(withLog, true)).toBe(null);
+  });
+
+  it('nothing received yet: no close action', () => {
+    expect(closeVia(draft({ delivered: false }), false)).toBe(null);
+  });
+
+  it('the INSTALL log owns `installed` the same way the delivery log owns `delivered' + "'" + ` — a manual close is refused, not offered, once it has entries`, () => {
+    const withInstallLog = draft({ delivered: true, siteDate: '2026-07-10' }, [], [{ qty: 1, note: '', date: '2026-07-12' }]);
+    expect(closeVia(withInstallLog, false)).toBe(null);
+    // Warehouse → on site is unaffected — that write never touches `installed`.
+    expect(closeVia(draft({ delivered: true }, [], [{ qty: 1, note: '', date: '2026-07-12' }]), false)).toBe('on-site');
+  });
+});
+
 /* ================================================== 5. backorders (§3.2.5) */
 
 describe('backorder math', () => {
@@ -457,6 +569,31 @@ describe('submittalApproved / submittalBlockers', () => {
 
   it('nothing blocking is an empty list', () => {
     expect(submittalBlockers(snap({ submittal: 'N/A' }))).toEqual([]);
+  });
+});
+
+describe('fieldMeasurePending — the visit is open until someone says they measured', () => {
+  it('no scheduled visit, nothing pending', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '' }))).toBe(false);
+    expect(fieldMeasurePending(snap({ fieldDate: '', fieldStatus: 'pending' }))).toBe(false);
+  });
+
+  it('a scheduled visit stays open while the component is not approved', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-08-01', fieldStatus: 'pending' }))).toBe(true);
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-08-01', fieldStatus: 'revise' }))).toBe(true);
+  });
+
+  it('Approved closes it — that IS the confirmation', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-08-01', fieldStatus: 'approved' }))).toBe(false);
+  });
+
+  it('a date already past is still open — the calendar never confirms anything', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-06-01', fieldStatus: 'pending' }))).toBe(true);
+  });
+
+  it('`fieldReq` does not gate it: not required to order ≠ already measured', () => {
+    expect(fieldMeasurePending(snap({ fieldDate: '2026-08-01', fieldReq: false, fieldStatus: 'pending' }))).toBe(true);
+    expect(submittalBlockers(snap({ fieldDate: '2026-08-01', fieldReq: false, fieldStatus: 'pending' }))).toEqual([]);
   });
 });
 
@@ -622,6 +759,29 @@ describe('applyItemPatch — every cascade the grid relies on', () => {
     const before = item({ notes: 'keep me', vendor: 'Northline Fixtures Co.' });
     const after = applyItemPatch(before, { description: 'New description' });
     expect(after).toMatchObject({ notes: 'keep me', vendor: 'Northline Fixtures Co.', description: 'New description' });
+  });
+
+  // Scheduling a SECOND visit on a package whose measurements were already confirmed has
+  // to re-open the confirmation, or its ◆ would never come back and the new visit would
+  // exist nowhere on screen.
+  it('a new field-measure date re-opens the confirmation', () => {
+    const done = item({ fieldDate: '2026-06-01', fieldStatus: 'approved' });
+    expect(applyItemPatch(done, { fieldDate: '2026-08-20' }).fieldStatus).toBe('pending');
+  });
+
+  it('re-applying the SAME date confirms nothing and re-opens nothing', () => {
+    const done = item({ fieldDate: '2026-06-01', fieldStatus: 'approved' });
+    expect(applyItemPatch(done, { fieldDate: '2026-06-01' }).fieldStatus).toBe('approved');
+  });
+
+  it('clearing the date leaves the component status alone', () => {
+    const done = item({ fieldDate: '2026-06-01', fieldStatus: 'approved' });
+    expect(applyItemPatch(done, { fieldDate: '' })).toMatchObject({ fieldDate: '', fieldStatus: 'approved' });
+  });
+
+  it('an explicit fieldStatus in the same patch wins over the re-open', () => {
+    const out = applyItemPatch(item({ fieldDate: '2026-06-01' }), { fieldDate: '2026-08-20', fieldStatus: 'approved' });
+    expect(out.fieldStatus).toBe('approved');
   });
 });
 
@@ -954,5 +1114,161 @@ describe('install quantities — the log owns the number, or the boolean does', 
     const up = addInstallTo(received({ report: snap({ qty: 10 }) }), { qty: 3, note: '', date: '2026-07-10' });
     expect(itemDirty(up)).toBe(true);
     expect(snapshot(up).installedQty).toBe(3);
+  });
+});
+
+/* ============================================== mosaicCards and its helpers (Overview) */
+
+describe('progressPct — 0% and 100% are verdicts, never rounding', () => {
+  it('0 total is 0%', () => expect(progressPct(0, 0)).toBe(0));
+  it('0 closed is 0%, never a rounded-up sliver', () => expect(progressPct(0, 200)).toBe(0));
+  it('all closed is 100%, exactly', () => expect(progressPct(200, 200)).toBe(100));
+  it('1 of 200 rounds to 1%, not down to 0', () => expect(progressPct(1, 200)).toBe(1));
+  it('199 of 200 rounds to 99%, not up to 100', () => expect(progressPct(199, 200)).toBe(99));
+});
+
+describe('packageProgressFlag — the two zero states are different alarms', () => {
+  it('no items at all is null (nothing to flag)', () => expect(packageProgressFlag(0, 0, 0)).toBeNull());
+  it('every item closed is complete', () => expect(packageProgressFlag(5, 5, 5)).toBe('complete'));
+  it('under way (some closed) carries no flag', () => expect(packageProgressFlag(2, 5, 5)).toBeNull());
+  it('material in hand, nothing closed — an installation problem', () => expect(packageProgressFlag(0, 3, 5)).toBe('not-started'));
+  it('nothing received at all — a procurement problem', () => expect(packageProgressFlag(0, 0, 5)).toBe('awaiting-delivery'));
+});
+
+describe('stableSlot — identity, not render order', () => {
+  it('is stable for the same id', () => {
+    expect(stableSlot('project-abc', 6)).toBe(stableSlot('project-abc', 6));
+  });
+  it('stays within [0, n)', () => {
+    for (const id of ['a', 'bb', 'project-xyz', '']) {
+      const slot = stableSlot(id, 6);
+      expect(slot).toBeGreaterThanOrEqual(0);
+      expect(slot).toBeLessThan(6);
+    }
+  });
+});
+
+describe('detourOf — goes through deliveryLogRows, not it.deliveries', () => {
+  it('a warehouse leg still counts after the material moved on to site', () => {
+    const deliveries: DeliveryRecord[] = [
+      { qty: 10, note: '', date: '2026-06-01', kind: 'wh-in' },
+      { qty: 10, note: '', date: '2026-06-05', kind: 'wh-out' },
+    ];
+    const r = snap({ qty: 10, delivered: true, receivedQty: 10, receivedDate: '2026-06-01', siteDate: '2026-06-05' });
+    expect(detourOf(r, deliveries)).toBe('warehouse');
+  });
+  it('material pulled from our own stock is a stock detour', () => {
+    const deliveries: DeliveryRecord[] = [{ qty: 10, note: '', date: '2026-06-01', kind: 'stock' }];
+    const r = snap({ qty: 10, delivered: true, receivedQty: 10, receivedDate: '2026-06-01' });
+    expect(detourOf(r, deliveries)).toBe('stock');
+  });
+  it('a direct, undetoured delivery is null — straight to site, no warehouse stop', () => {
+    const r = snap({ qty: 10, delivered: true, receivedQty: 10, receivedDate: '2026-06-01', siteDate: '2026-06-01' });
+    expect(detourOf(r, [])).toBeNull();
+  });
+});
+
+describe('mosaicCards — the pure aggregation behind the Overview mosaic', () => {
+  function project(over: Partial<Project> = {}): Project {
+    return { id: 'p1', name: 'Project One', gc: '', ...over };
+  }
+  function pkg(over: Partial<WorkPackage> = {}): WorkPackage {
+    return { id: 'wp1', projectId: 'p1', prefix: '10.10', label: 'Toilet accessories', reportSince: null, ...over };
+  }
+  function mi(over: Partial<MaterialItem> = {}): MaterialItem {
+    const base = item({ id: 'i1', wpId: 'wp1', ...over });
+    return { ...base, report: snap(over) };
+  }
+
+  it('a package with no items at all gets no bar — the data-entry state, not zero progress', () => {
+    const cards = mosaicCards([project()], [pkg()], []);
+    expect(cards).toHaveLength(0);
+  });
+
+  it('an install project: closed = installed, pending is everything else', () => {
+    const items = [
+      mi({ id: 'i1', installed: true, installedDate: '2026-07-01', delivered: true, receivedQty: 1, siteDate: '2026-07-01', qty: 1 }),
+      mi({ id: 'i2', delivered: false, qty: 1 }),
+    ];
+    const cards = mosaicCards([project()], [pkg()], items);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].scope).toBe('install');
+    expect(cards[0].packages[0]).toMatchObject({ total: 2, closed: 1, pending: 1 });
+    expect(cards[0].pct).toBe(50);
+  });
+
+  it('a supply-only project: closed = on site, third zone is unordered material', () => {
+    const supplyPkg = pkg({ supplyOnly: true });
+    const items = [
+      mi({ id: 'i1', po: 'PO-1', delivered: true, receivedQty: 1, siteDate: '2026-07-01', qty: 1 }),
+      mi({ id: 'i2', po: 'PO-2', delivered: false, qty: 1 }), // bought, not yet closed
+      mi({ id: 'i3', po: '', delivered: false, qty: 1 }),     // not ordered at all
+    ];
+    const cards = mosaicCards([project({ supplyOnly: true })], [supplyPkg], items);
+    expect(cards[0].scope).toBe('supply');
+    const p = cards[0].packages[0];
+    expect(p.total).toBe(3);
+    expect(p.closed).toBe(1);
+    expect(p.ordered).toBe(1); // i2: bought, not closed
+    expect(p.pending - p.ordered).toBe(1); // i3: unordered leftover
+  });
+
+  it('badges: install scope tracks not-ordered/warehouse/on-site/installed; supply scope tracks not-ordered/backorder/detour', () => {
+    const installCards = mosaicCards([project()], [pkg()], [mi({ id: 'i1', po: 'PO-1', delivered: true, receivedQty: 1, qty: 1 })]);
+    expect(installCards[0].badges.map((b) => b.key)).toEqual(['not-ordered', 'warehouse', 'on-site', 'installed']);
+    const supplyCards = mosaicCards([project({ supplyOnly: true })], [pkg({ supplyOnly: true })], [mi({ id: 'i1', po: '', qty: 1 })]);
+    expect(supplyCards[0].badges.map((b) => b.key)).toEqual(['not-ordered', 'backorder', 'detour']);
+  });
+
+  // 🛒 is the badge both scopes carry: on a project we install, the three physical badges
+  // can only count material that already exists somewhere, so the package nobody has
+  // ordered was invisible on exactly the cards where we do the ordering. OFCI rides with
+  // the bought ones — it is nobody's left to buy.
+  it('carries 🛒 not-ordered on an install card too, and leaves OFCI out of it', () => {
+    const items = [
+      mi({ id: 'i1', po: '', delivered: false, qty: 1 }),
+      mi({ id: 'i2', po: 'OFCI', delivered: false, qty: 1 }),
+      mi({ id: 'i3', po: 'PO-1', delivered: true, receivedQty: 1, qty: 1 }),
+    ];
+    const cards = mosaicCards([project()], [pkg()], items);
+    expect(cards[0].scope).toBe('install');
+    const notOrdered = cards[0].badges.find((b) => b.key === 'not-ordered')?.items ?? [];
+    expect(notOrdered).toHaveLength(1);
+    expect(notOrdered[0]).toMatchObject({ id: 'i1', wpId: 'wp1' });
+  });
+
+  it('sorts packages DESCENDING within a card (finished on top) and cards ASCENDING between them (worst first)', () => {
+    const wpDone = pkg({ id: 'wp-done', label: 'Done package' });
+    const wpStalled = pkg({ id: 'wp-stalled', label: 'Stalled package' });
+    const items = [
+      mi({ id: 'i1', wpId: 'wp-done', installed: true, installedDate: '2026-07-01', delivered: true, receivedQty: 1, siteDate: '2026-07-01', qty: 1 }),
+      mi({ id: 'i2', wpId: 'wp-stalled', delivered: false, qty: 1 }),
+    ];
+    const projA = project({ id: 'pA', name: 'Behind Project' });
+    const projB = project({ id: 'pB', name: 'Ahead Project' });
+    const cards = mosaicCards(
+      [projA, projB],
+      [{ ...wpDone, projectId: 'pA' }, { ...wpStalled, projectId: 'pA' }, { ...wpDone, id: 'wp-doneB', projectId: 'pB' }],
+      [
+        ...items,
+        mi({ id: 'i3', wpId: 'wp-doneB', installed: true, installedDate: '2026-07-01', delivered: true, receivedQty: 1, siteDate: '2026-07-01', qty: 1 }),
+      ],
+    );
+    // Within pA's card, the done package sorts before the stalled one.
+    const cardA = cards.find((c) => c.projectId === 'pA')!;
+    expect(cardA.packages[0].wpLabel).toBe('Done package');
+    expect(cardA.packages[1].wpLabel).toBe('Stalled package');
+    // Between cards, pA (50%) sorts before pB (100%) — the project needing attention leads.
+    expect(cards[0].projectId).toBe('pA');
+    expect(cards[1].projectId).toBe('pB');
+  });
+
+  it('colour slot follows project identity (stableSlot), independent of array position', () => {
+    const cards = mosaicCards(
+      [project()],
+      [pkg()],
+      [mi({ id: 'i1', delivered: true, receivedQty: 1, qty: 1 })],
+    );
+    expect(cards[0].slot).toBe(stableSlot('p1', 6));
   });
 });

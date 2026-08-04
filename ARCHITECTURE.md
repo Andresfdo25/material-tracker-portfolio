@@ -101,6 +101,20 @@ Each number has exactly one owner, never two. When the delivery log has entries,
 
 The stage itself has **one writer**, `stagePatch`. Four different surfaces move material (a row checkbox, two popovers, a modal), and each used to make its own decisions about date stamping and OFCI. They now all funnel through one function, so those rules are decided once instead of three-quarters-consistently.
 
+## 8. A date is a plan; only a person is a record
+
+The field-measure milestone is the one thing on the board that needs a human to physically drive somewhere. It used to drop off the timeline the moment its date passed — which reads as sensible until you say it out loud: the calendar was being allowed to certify that someone went to the site.
+
+So the ◆ is anchored instead. `fieldMeasurePending()` is true while an item has a `fieldDate` and its Field measurements component is not `approved`. While it's true the milestone stays; once the date is past it pins itself onto today's line and pulses. The only thing that releases it is a person marking the component **Approved** — from the modal, or from the ◆ itself, which is the same write.
+
+Three consequences that are the actual design:
+
+- **"Required" doesn't gate it.** Whether a submittal component blocks the *order* is a different question from whether the crew went out to measure. So an item with the component switched off still anchors its ◆, and confirming a visit deliberately does **not** switch the component on — a "yes, we measured" click has no business declaring the item blocked.
+- **The release has to live where the anchor is explained.** The status picker therefore renders even with Required off whenever a visit is scheduled. Otherwise the dot is stuck on the board with its only key hidden behind a checkbox that means something else.
+- **Rescheduling re-opens it.** A new, different `fieldDate` resets the status to pending in `applyItemPatch`. Without that, a second visit to an already-confirmed package (the wall moved; the dimensions came back wrong) would draw no ◆ at all and exist nowhere on screen.
+
+The generalisable version: **when a state means "a human did something", never let elapsed time write it.** Let the date describe intent, make the confirmation an explicit act, and put that act one click from wherever the intent is displayed.
+
 ---
 
 ## Code layout

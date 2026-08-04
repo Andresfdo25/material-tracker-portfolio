@@ -1,10 +1,31 @@
-// MaterialListToolbar.tsx — the sticky navy band at the top of the Material List and its
-// three rows: title + project lifecycle, capture actions + view/export, search + filters +
-// list tools. Extracted from MaterialListScreen (SPEC-hardening §4); the screen still owns
-// every piece of state, this only renders it and calls back.
+// MaterialListToolbar.tsx — the sticky header of the Material List. Extracted from
+// MaterialListScreen (SPEC-hardening §4); the screen still owns ALL the state, this only
+// renders it and calls back.
+//
+// SHAPE (lote 67). Two objects, not three equal-weight rows:
+//
+//   · The PURPLE BAND — *what am I doing to this project*. On top the identity (name, GC,
+//     date, the switcher and the lifecycle); a rule; below the work banks, each with its
+//     own small-caps label: CAPTURE · SET ACROSS THE PROJECT · VIEW & EXPORT · PUBLISH.
+//     It's the same device as Overview's `ClockGroup` — grouping under the name of the
+//     question they answer — applied to buttons. It used to be fourteen controls spread
+//     across three rows of equal weight, unnamed, and the project name competed in
+//     hierarchy with "Quick Add".
+//
+//   · The WHITE STRIP below — *what am I looking at right now*: search, the semaphore
+//     filters, ⏰ LATE, and to the right the view tools (collapse, columns). The semaphore
+//     badges are PASTELS, drawn to read over white, and they used to live on the purple.
+//     Moving them down here gives them back their background, leaves the band at two
+//     rows (the sticky header measures less, which shows on a long list), and joins the
+//     "Showing 4 of 11" summary with the controls that produce it.
+//
+// Only the STRIP stays sticky (`.sticky-toolbar`, see `index.css`): with both pinned the
+// fixed header measured ~200px and half were buttons unused while reading.
+import type { ReactNode } from 'react';
 import type { ExportMode, ItemStage, ItemStatus, MaterialItem, Project, WorkPackage } from '../store/types';
 import { fmtLong, today } from '../store/logic';
 import { Button } from './ds/Button';
+import { StatusBadge } from './ds/StatusBadge';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { RenameProjectControl } from './RenameProjectControl';
 import { ThresholdsPopover } from './ThresholdsPopover';
@@ -14,7 +35,29 @@ import { StagePopover } from './StagePopover';
 import { ManageColumnsMenu } from './ManageColumnsMenu';
 import { StatusFilterBar } from './StatusFilterBar';
 
-/** Sits on the navy band — the selected side goes solid white with navy text (plus a
+/** The band's buttons share height with the three "Set across the project" popovers,
+ * which draw at 34px (`toolbarStyle` in `BulkSetPopover` / `StagePopover` /
+ * `FieldMeasurePopover`). `Button`'s `size="sm"` gives 37, and a three-pixel difference
+ * INSIDE the same group shows — which is exactly what a group promises won't happen. It's
+ * a `style`, not a class, because `Button`'s padding is inline and an inline always beats
+ * the sheet (lote 48). */
+const toolBtn = { padding: '8px 13px' } as const;
+
+/** A work bank: the small-caps label and, below, its controls. Renders `null` if it has
+ * none left — in the Client·GC view and an archived project whole groups switch off, and
+ * a label over an empty gap is worse than no label. */
+function Toolgroup({ label, onCanvas, inline, children }: { label: string; onCanvas?: boolean; inline?: boolean; children: ReactNode }) {
+  const kids = Array.isArray(children) ? children.filter(Boolean) : children;
+  if (Array.isArray(kids) && kids.length === 0) return null;
+  return (
+    <div className={`toolgroup${onCanvas ? ' toolgroup--on-canvas' : ''}${inline ? ' toolgroup--inline' : ''}`}>
+      <span className="toolgroup__label">{label}</span>
+      <div className="toolgroup__row">{kids}</div>
+    </div>
+  );
+}
+
+/** Sits on the purple band — the selected side goes solid white with navy text (plus a
  * check mark) so there's never a doubt which view is active. */
 function ViewToggle({ value, onChange }: { value: ExportMode; onChange: (v: ExportMode) => void }) {
   const opt = (v: ExportMode, label: string) => {
@@ -29,7 +72,7 @@ function ViewToggle({ value, onChange }: { value: ExportMode; onChange: (v: Expo
         // lets it wash white on hover instead of reading as a plain label.
         className="seg-btn"
         style={{
-          flex: 1, border: 'none', borderRadius: 6, cursor: 'pointer', padding: '6px 10px',
+          flex: 1, border: 'none', borderRadius: 6, cursor: 'pointer', padding: '5px 10px',
           font: 'var(--text-caption)', fontWeight: on ? 700 : 500, whiteSpace: 'nowrap',
           ...(on ? { background: '#ffffff' } : {}),
           color: on ? 'var(--brand-navy)' : 'rgba(255,255,255,0.85)',
@@ -42,7 +85,7 @@ function ViewToggle({ value, onChange }: { value: ExportMode; onChange: (v: Expo
     );
   };
   return (
-    <div style={{ display: 'flex', padding: 2, borderRadius: 8, background: 'rgba(255,255,255,0.14)', border: '1px solid rgba(255,255,255,0.4)', width: 236 }}>
+    <div style={{ display: 'flex', padding: 2, borderRadius: 8, background: 'rgba(255,255,255,0.14)', border: '1px solid rgba(255,255,255,0.4)', width: 208, height: 34, boxSizing: 'border-box' }}>
       {opt('internal', 'Internal')}
       {opt('client', 'Client · GC')}
     </div>
@@ -50,7 +93,7 @@ function ViewToggle({ value, onChange }: { value: ExportMode; onChange: (v: Expo
 }
 
 export function MaterialListToolbar({
-  project, projects, packages, itemsOf, itemCount, client, readOnly, dirtyCount,
+  project, projects, packages, itemsOf, itemCount, matchCount, client, readOnly, dirtyCount,
   viewMode, onViewMode, search, onSearch, statusCounts, filter, onToggleFilter, onClearFilter,
   lateCount, lateOnly, onToggleLate,
   allCollapsed, onCollapseAll, hiddenCols, onToggleCol, onResetCols,
@@ -62,8 +105,10 @@ export function MaterialListToolbar({
   projects: Project[];
   packages: WorkPackage[];
   itemsOf: (wpId: string) => MaterialItem[];
-  /** Items across the whole project — only used for the "applies to N items" note. */
+  /** Items across the whole project — the "applies to N items" note and the filter summary. */
   itemCount: number;
+  /** How many of them survive the current search + filters — the summary line. */
+  matchCount: number;
   client: boolean;
   readOnly: boolean;
   dirtyCount: number;
@@ -97,16 +142,21 @@ export function MaterialListToolbar({
   onFieldMeasureClear: (ids: string[]) => void;
   onStage: (stage: ItemStage, date: string, ids?: string[]) => void;
 }) {
+  const editable = !client && !readOnly;
+  const q = search.trim();
+  const filtering = filter.length > 0 || lateOnly || q !== '';
+
   return (
-    <div className="sticky-toolbar no-print">
-      {/* Brand band — everything project-scoped lives here (mockup 07142026) */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, background: 'var(--brand-dark)', borderRadius: 'var(--radius-md)', padding: '14px 18px 12px', boxShadow: 'var(--shadow-card)' }}>
-        {/* Row 1 — title/subtitle (left) · project switcher + lifecycle (right) */}
+    // Two siblings, not one wrapper: only the bottom strip is sticky, and a `sticky`
+    // enclosed by a parent of its own height never detaches (see `.sticky-toolbar`).
+    <>
+      <div className="actionband no-print">
+        {/* ---------------------------------------------- project identity */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 280 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ font: '700 40px/1.1 var(--font-display)', color: '#ffffff', letterSpacing: 0.2 }}>{project.name}</div>
-              {!client && !readOnly && <RenameProjectControl project={project} />}
+              <div style={{ font: '700 30px/1.15 var(--font-display)', color: '#ffffff', letterSpacing: 0.2 }}>{project.name}</div>
+              {editable && <RenameProjectControl project={project} />}
             </div>
             <div style={{ font: '500 15px/1.45 var(--font-text)', color: 'rgba(255,255,255,0.85)', marginTop: 4 }}>
               Material List / Procurement Log · GC/Client: <strong style={{ color: 'var(--brand-teal)' }}>{project.gc}</strong> · <span style={{ color: 'rgba(255,255,255,0.7)' }}>{fmtLong(today())}</span>
@@ -114,45 +164,48 @@ export function MaterialListToolbar({
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <ProjectSwitcher projects={projects} project={project} onSelect={onSelectProject} />
-            {!client && !readOnly && (
-              <Button variant="ghost" size="sm" onClick={onCloseProject} style={{ color: 'rgba(255,255,255,0.85)' }}>📁 Close Project</Button>
+            {editable && (
+              <Button variant="ghost" size="sm" onClick={onCloseProject} title="Archive this project — it becomes read-only and leaves the main list. Reversible." style={{ ...toolBtn, color: 'rgba(255,255,255,0.85)' }}>📁 Close Project</Button>
             )}
-            {!client && !readOnly && (
+            {editable && (
+              // Outline red at rest, solid red on hover: it's the screen's most
+              // destructive action and its least frequent, and at full fill it was also
+              // the loudest. The red gets spent at the moment it's used.
               <Button
+                variant="danger"
                 size="sm"
+                className="btn--on-dark"
+                style={toolBtn}
                 onClick={onDeleteProject}
                 title="Permanently delete this project and all its data — cannot be undone"
-                style={{ background: '#d84343', color: '#ffffff', borderColor: 'transparent' }}
               >
                 🗑️ Delete Project
               </Button>
             )}
           </div>
         </div>
-        {/* Row 2 — capture actions (left) · view & export (right) */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 280, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {!client && !readOnly && (
-              <>
-                <Button variant="secondary" size="sm" onClick={onAddWorkPackage}>＋ Add Work Package</Button>
-                <Button variant="secondary" size="sm" onClick={onImportMaterials}>📂 Import Materials</Button>
-                <span
-                  title="Upload a materials list (.csv, .xlsx or .xls). Items are organized automatically by Work Package, section title or Cost Code."
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18,
-                    borderRadius: '50%', border: '1px solid rgba(255,255,255,0.5)', color: 'rgba(255,255,255,0.85)',
-                    fontSize: 11, fontWeight: 700, cursor: 'help', userSelect: 'none',
-                  }}
-                >
-                  i
-                </span>
-                <Button variant="secondary" size="sm" onClick={onQuickAdd} title="Paste an Item · QTY · Vendor list straight from Excel">⚡ Quick Add</Button>
-              </>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            {!client && !readOnly && <ThresholdsPopover projectId={project.id} />}
-            {!client && !readOnly && (
+
+        {editable && <div className="actionband__rule" />}
+
+        {/* ------------------------------------------------- work banks */}
+        {editable && (
+          <div className="toolrow">
+            <Toolgroup label="Capture">
+              <Button variant="secondary" size="sm" style={toolBtn} onClick={onAddWorkPackage}>＋ Add Work Package</Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                style={toolBtn}
+                onClick={onImportMaterials}
+                title="Upload a materials list (.csv, .xlsx or .xls). Items are organized automatically by Work Package, section title or Cost Code."
+              >
+                📂 Import Materials
+              </Button>
+              <Button variant="secondary" size="sm" style={toolBtn} onClick={onQuickAdd} title="Paste an Item · QTY · Vendor list straight from Excel">⚡ Quick Add</Button>
+            </Toolgroup>
+
+            <Toolgroup label="Set across the project">
+              <ThresholdsPopover projectId={project.id} />
               <BulkSetPopover
                 mode="toolbar"
                 label="Set On-Site date"
@@ -161,8 +214,6 @@ export function MaterialListToolbar({
                 confirmLabel="Apply to all"
                 onApply={onGlobalOnsite}
               />
-            )}
-            {!client && !readOnly && (
               <FieldMeasurePopover
                 packages={packages}
                 itemsOf={itemsOf}
@@ -170,34 +221,107 @@ export function MaterialListToolbar({
                 onClear={onFieldMeasureClear}
                 onNewPackage={onAddWorkPackage}
               />
-            )}
-            {!client && !readOnly && (
               <StagePopover
                 mode="toolbar"
                 packages={packages}
                 itemsOf={itemsOf}
                 onApply={onStage}
               />
-            )}
-            <ViewToggle value={viewMode} onChange={onViewMode} />
-            <Button variant="secondary" size="sm" onClick={onExportPdf} title="Export as PDF">📥 PDF</Button>
+            </Toolgroup>
+
+            {/* The two right-hand groups travel together inside their own row: when the
+                width runs out they have to fall to the next line AS A BLOCK and stay
+                pinned to the right margin. Loose, the one left over — Publish — used to
+                fall alone and land on the left, under Capture. */}
+            <div className="toolrow" style={{ marginLeft: 'auto' }}>
+              <Toolgroup label="View & export">
+                <ViewToggle value={viewMode} onChange={onViewMode} />
+                <Button variant="secondary" size="sm" style={toolBtn} onClick={onExportPdf} title="Export as PDF">📥 PDF</Button>
+              </Toolgroup>
+
+              <Toolgroup label="Publish">
+                {dirtyCount > 0 && (
+                  <span className="draft-pill" title={`${dirtyCount} work package${dirtyCount === 1 ? '' : 's'} carry auto-saved edits that Submittals and Overview can't see yet`}>
+                    <span className="draft-pill__dot" />
+                    {dirtyCount} unpublished
+                  </span>
+                )}
+                {/* The near-black of `primary` over purple was dark-on-dark: the screen's
+                    most important button was its least visible. The brand teal — the same
+                    one that already writes the GC two lines above — is what contrasts
+                    hardest against this band. It only lights up when there's something to
+                    publish; with no pending changes it recedes to ghost. */}
+                <Button
+                  variant={dirtyCount ? 'secondary' : 'ghost'}
+                  size="sm"
+                  title="Ctrl+S"
+                  onClick={onSaveAll}
+                  style={dirtyCount
+                    ? { ...toolBtn, background: 'var(--brand-teal)', color: 'var(--brand-dark)', borderColor: 'transparent', fontWeight: 700 }
+                    : { ...toolBtn, color: 'rgba(255,255,255,0.85)' }}
+                >
+                  💾 Save ALL to report
+                </Button>
+              </Toolgroup>
+            </div>
           </div>
-        </div>
-        {/* Row 3 — search + status filters (left) · list tools (right) */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 280, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        )}
+        {/* An archived project or the Client·GC view have no work banks, but Save ALL is
+            still theirs while writing is still possible. */}
+        {!editable && !readOnly && (
+          <>
+            <div className="actionband__rule" />
+            <div className="toolrow">
+              <span style={{ flex: 1, minWidth: 0 }} />
+              <Toolgroup label="View & export">
+                <ViewToggle value={viewMode} onChange={onViewMode} />
+                <Button variant="secondary" size="sm" style={toolBtn} onClick={onExportPdf} title="Export as PDF">📥 PDF</Button>
+              </Toolgroup>
+              <Toolgroup label="Publish">
+                <Button
+                  variant={dirtyCount ? 'secondary' : 'ghost'}
+                  size="sm"
+                  title="Ctrl+S"
+                  onClick={onSaveAll}
+                  style={dirtyCount
+                    ? { ...toolBtn, background: 'var(--brand-teal)', color: 'var(--brand-dark)', borderColor: 'transparent', fontWeight: 700 }
+                    : { ...toolBtn, color: 'rgba(255,255,255,0.85)' }}
+                >
+                  💾 Save ALL to report
+                </Button>
+              </Toolgroup>
+            </div>
+          </>
+        )}
+        {readOnly && (
+          <>
+            <div className="actionband__rule" />
+            <div className="toolrow">
+              <span style={{ flex: 1, minWidth: 0 }} />
+              <Toolgroup label="View & export">
+                <ViewToggle value={viewMode} onChange={onViewMode} />
+                <Button variant="secondary" size="sm" style={toolBtn} onClick={onExportPdf} title="Export as PDF">📥 PDF</Button>
+              </Toolgroup>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ------------------------------------------------------------- search strip */}
+      <div className="sticky-toolbar no-print">
+        <div className="findbar">
+          <div className="findbar__row">
             {!client && (
+              // No label: the placeholder already says what it is, and the row now shares
+              // space with the status badges (they used to own a sub-row of their own, 40px
+              // of height that above the grid are rows of data no longer visible).
               <input
+                className="search-input"
                 value={search}
                 onChange={(e) => onSearch(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Escape') onSearch(''); }}
-                placeholder="🔎 Search items…"
+                placeholder="🔎 Description, vendor, PO#, notes…"
                 title="Filters every package by description, vendor, PO# or notes (Esc clears)"
-                style={{
-                  height: 32, width: 210, padding: '0 10px', borderRadius: 'var(--radius-pill)',
-                  border: '1px solid rgba(255,255,255,0.35)', font: 'var(--text-caption)', color: 'var(--ink)',
-                  background: 'var(--canvas)', outline: 'none',
-                }}
               />
             )}
             {!client && (
@@ -206,32 +330,34 @@ export function MaterialListToolbar({
                 lateCount={lateCount} lateOnly={lateOnly} onToggleLate={onToggleLate}
               />
             )}
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <Button variant="ghost" size="sm" onClick={onCollapseAll} style={{ padding: '6px 10px', color: 'rgba(255,255,255,0.85)' }}>
-              {allCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
-            </Button>
-            {!readOnly && (
-              <Button
-                variant={dirtyCount ? 'primary' : 'secondary'}
-                size="sm"
-                title="Ctrl+S"
-                onClick={onSaveAll}
-                style={dirtyCount ? { borderColor: 'rgba(255,255,255,0.45)' } : undefined}
-              >
-                💾 Save ALL to report
+            {client && <span style={{ flex: 1, minWidth: 0 }} />}
+            <Toolgroup label="List view" onCanvas inline>
+              <Button variant="secondary" size="sm" style={toolBtn} onClick={onCollapseAll}>
+                {allCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
               </Button>
-            )}
-            {!client && !readOnly && (
-              <ManageColumnsMenu
-                hidden={hiddenCols}
-                onToggle={onToggleCol}
-                onReset={onResetCols}
-              />
-            )}
+              {editable && (
+                <ManageColumnsMenu
+                  hidden={hiddenCols}
+                  onToggle={onToggleCol}
+                  onReset={onResetCols}
+                />
+              )}
+            </Toolgroup>
           </div>
+          {filtering && (
+            <div className="findbar__summary">
+              <span>
+                Showing <strong style={{ color: 'var(--ink)', font: 'var(--text-mono)', fontWeight: 700 }}>{matchCount}</strong> of {itemCount} items
+              </span>
+              {filter.length > 0 && <span>with status</span>}
+              {filter.map((s) => <StatusBadge key={s} status={s} />)}
+              {lateOnly && <strong style={{ color: 'var(--alert-ink)' }}>⏰ past their promised ship date</strong>}
+              {q !== '' && <span>matching <strong style={{ color: 'var(--ink)' }}>"{q}"</strong></span>}
+              <span>· work packages with no matching rows are hidden.</span>
+            </div>
+          )}
         </div>
       </div>
-    </div>
+    </>
   );
 }

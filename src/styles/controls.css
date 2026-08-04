@@ -60,6 +60,43 @@
   border-color: color-mix(in srgb, currentColor 60%, transparent);
 }
 
+/* Destructive (lote 67) — the text-button twin of `.icon-btn--danger`. It exists because
+ * "🗑️ Delete Project" used to be a solid red fill in the top-right corner of the Material
+ * List: the LEAST frequent action on the screen, and the only irreversible one, was also
+ * the loudest. Outline at rest, fills in only on hover: the red gets spent at the moment
+ * it's used, not all day. Color, border and background all live HERE (the `danger`
+ * variant of `Button` declares none of them) because all three change with state, and a
+ * state can't be declared inline. */
+.btn--danger {
+  color: var(--alert-ink);
+  border-color: color-mix(in srgb, var(--alert-ink) 42%, transparent);
+  background: color-mix(in srgb, var(--status-order-now) 22%, transparent);
+}
+.btn--danger:hover:not(:disabled) {
+  color: var(--status-order-now-ink);
+  background: var(--status-order-now);
+  border-color: var(--status-order-now-ink);
+}
+/* On the purple action band: the pair above leans on the semaphore pastel, which has
+ * nothing to sit on over --brand-dark. Here the resting state is a translucent red and
+ * the hover fills solid — same message, different substrate. */
+.btn--danger.btn--on-dark {
+  color: #ffc9c9;
+  border-color: rgba(255, 155, 155, 0.5);
+  background: rgba(216, 67, 67, 0.2);
+}
+.btn--danger.btn--on-dark:hover:not(:disabled) {
+  color: #ffffff;
+  background: #d84343;
+  border-color: transparent;
+}
+/* `.btn`'s hover dims brightness; over a solid red fill that mutes it instead of lighting
+ * it up. Both of these already change background, so the filter is redundant. */
+.btn--danger:hover:not(:disabled),
+:root[data-theme='dark'] .btn--danger:hover:not(:disabled) {
+  filter: none;
+}
+
 /* ============================================================== botones de icono */
 /* El pedido explícito del usuario: que un icono se lea como botón ANTES de pasarle el
  * mouse por encima. Contenedor + hairline + relleno suave en reposo; en hover sube y
@@ -307,12 +344,158 @@
   outline-offset: -2px;
 }
 
+/* ============================ installation progress mosaic (Overview) */
+/* The three clickable surfaces of a card. All declare their background HERE and not
+ * inline: hover has to be able to change it, and an inline style always beats the
+ * stylesheet. */
+.mos-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--canvas);
+  overflow: hidden;
+}
+/* The card header: project name on the left, closing icon + rollup on the right. */
+.mos-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-soft);
+  cursor: pointer;
+  text-align: left;
+  transition: background 110ms ease;
+}
+.mos-head:hover {
+  background: var(--surface-strong);
+}
+.mos-head:focus-visible,
+.mos-row:focus-visible,
+.mos-badge:focus-visible:not(:disabled) {
+  outline: 2px solid var(--info-border);
+  outline-offset: -2px;
+}
+/* One row = one package: label on top, bar below. Flat at rest, chip on hover. */
+.mos-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 5px 6px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  transition: background 110ms ease, border-color 110ms ease;
+}
+.mos-row:hover {
+  background: var(--surface-soft);
+  border-color: var(--hairline);
+}
+/* Package name + its flag. The name truncates with ellipsis and the row's `title`
+ * carries the full text; the flag never truncates (it's one word and it's the warning). */
+.mos-row-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font: var(--text-caption);
+  color: var(--muted);
+}
+.mos-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The three footer badges. At zero items it goes dim and opens nothing — an empty
+ * drill-down is a modal that opens to say there's nothing in it. */
+.mos-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 110ms ease, border-color 110ms ease;
+}
+.mos-badge:hover:not(:disabled) {
+  background: var(--surface-soft);
+  border-color: var(--hairline);
+}
+.mos-badge:disabled {
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ============================================ riel de indicadores (Overview, lote 62) */
+/* Los siete gauges del tablero son botones —cada uno abre su lista— y no tenían ningún
+ * estado: la caja bordeada es la del GRUPO, así que la celda no tiene contorno propio que
+ * iluminar. `filter` y `outline` son las dos propiedades que ningún inline del componente
+ * declara: el 🔴 conserva su relleno rojo del semáforo y aun así responde. `outline-offset`
+ * negativo porque el foco se dibuja DENTRO de la celda. */
+.ov-gauge {
+  transition: filter 120ms ease;
+}
+.ov-gauge:hover {
+  filter: brightness(0.96);
+}
+.ov-gauge:active {
+  filter: brightness(0.92);
+}
+.ov-gauge:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: -3px;
+}
+/* Igual que en `.btn`: sobre canvas oscuro bajar el brillo no se ve, hay que subirlo. */
+:root[data-theme='dark'] .ov-gauge:hover {
+  filter: brightness(1.2);
+}
+:root[data-theme='dark'] .ov-gauge:active {
+  filter: brightness(1.32);
+}
+
+/* El conteo de una celda del Portfolio (lote 64). Hereda `font` y `color` de la celda —que
+ * en la mitad de las columnas es la tinta de un pastel del semáforo— y por eso NO declara
+ * ninguno de los dos: el botón sigue siendo el número, no una cajita encima. El contorno de
+ * currentColor es lo único que aparece al pasar por encima. */
+.ov-count {
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 110ms ease, background 110ms ease;
+}
+.ov-count:hover {
+  border-color: currentColor;
+}
+.ov-count:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: -1px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .btn,
   .icon-btn,
   .chip-btn,
+  .ov-gauge,
   .swatch-btn,
-  .menu-item {
+  .menu-item,
+  .ov-count {
     transition: none;
   }
   .btn:hover,

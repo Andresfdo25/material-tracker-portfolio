@@ -46,7 +46,7 @@ export function StatusBadge({ status = 'planned', solid = false, dot = true, big
         fontWeight: 600,
         color: s.ink,
         background: solid ? s.fill : `color-mix(in srgb, ${s.fill} 45%, white)`,
-        padding: big ? '6px 14px' : '4px 10px',
+        padding: big ? '5px 12px' : '4px 10px',
         borderRadius: 'var(--radius-md)',
         border: solid ? 'none' : `1px solid color-mix(in srgb, ${s.fill} 70%, white)`,
         whiteSpace: 'nowrap',
@@ -54,8 +54,11 @@ export function StatusBadge({ status = 'planned', solid = false, dot = true, big
     >
       {dot && <span style={{ width: 7, height: 7, borderRadius: '50%', background: s.dot, flexShrink: 0 }} />}
       {children || s.label}
+      {/* 17px, not 21 (lote 67): with ten chips in a row the number at 21 pushed them to
+          three lines, and the figure already wins by weight and by family without being
+          the biggest thing on the screen. Tabular so counts line up across chips. */}
       {count != null && (
-        <span style={{ font: '700 21px/1 var(--font-text)', fontVariantNumeric: 'tabular-nums', marginLeft: 4 }}>{count}</span>
+        <span style={{ font: '700 17px/1 var(--font-text)', fontVariantNumeric: 'tabular-nums', marginLeft: 3 }}>{count}</span>
       )}
     </span>
   );

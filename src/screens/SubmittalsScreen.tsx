@@ -2,6 +2,11 @@
 // still blocks ordering (Pending / In Review / Revise & Resubmit), scoped to the open
 // project or all active projects. Reads the live working draft — the PM chases
 // submittals on current data, not the last published report.
+//
+// SHAPE (lote 67): the same `ds/ScreenBand` grammar as the Overview — header, controls
+// card, band — because this is the same class of screen. Here the band is a single one:
+// everything in this list answers the same question, *what does this item still need
+// before it can be bought*.
 import { useState, type CSSProperties } from 'react';
 import { useApp } from '../store/useApp';
 import { computeItem, fmtMDY, submittalBlockers } from '../store/logic';
@@ -11,6 +16,7 @@ import { GroupByBar, type GroupDim } from '../components/ds/GroupByBar';
 import { StatusBadge } from '../components/ds/StatusBadge';
 import { SubmittalBadge } from '../components/ds/SubmittalBadge';
 import { Button } from '../components/ds/Button';
+import { Band, EmptyState, ScopeControl, ScreenHead } from '../components/ds/ScreenBand';
 
 // Blocker categories — an item lands here if ANY submittal component still blocks it.
 const CATEGORIES = ['Product data', 'Samples', 'Shop drawings', 'Field measurements', 'Other'];
@@ -57,6 +63,9 @@ export function SubmittalsScreen() {
   const byCat = (cat: string) => rows.filter((x) => inCategory(submittalBlockers(x.i), cat));
   // Multi-select filter — a row shows if it's blocked by ANY selected category.
   const shown = typeFilter.length ? rows.filter((x) => typeFilter.some((cat) => inCategory(submittalBlockers(x.i), cat))) : rows;
+  // How many are already past their Buy-By — the one number that says whether this screen
+  // is a to-do list or an emergency. Reads in the section's caption.
+  const overdueCount = shown.filter((x) => x.days != null && x.days <= 0).length;
 
   // Grouping — GroupByBar keeps groupBy in hierarchy order (Project > Work package > Vendor).
   const dimValue = (x: Row, d: GroupDim) => (d === 'project' ? x.project.name : d === 'pkg' ? x.pkg.label : x.i.vendor || 'No vendor');
@@ -74,180 +83,187 @@ export function SubmittalsScreen() {
   // Deep link: lands on the Material List, scrolls to the exact item and flashes it.
   const jump = (projectId: string, itemId: string) => jumpToItem(projectId, itemId);
 
-  const th: CSSProperties = { textAlign: 'left', padding: '9px 12px', font: 'var(--text-caption)', color: 'var(--muted)', fontWeight: 600, borderBottom: '1px solid var(--hairline)', whiteSpace: 'nowrap' };
+  const th: CSSProperties = { textAlign: 'left', padding: '9px 12px', font: 'var(--text-caption)', color: 'var(--muted)', fontWeight: 600, borderBottom: '2px solid var(--border-strong)', whiteSpace: 'nowrap' };
   const td: CSSProperties = { padding: '10px 12px', font: 'var(--text-body)', color: 'var(--ink)', borderBottom: '1px solid var(--hairline)', whiteSpace: 'nowrap' };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 1180 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 260 }}>
-          <div style={{ font: 'var(--text-display-md)', color: 'var(--title)', fontWeight: 600 }}>Submittals</div>
-          <div style={{ font: 'var(--text-body)', color: 'var(--muted)', marginTop: 4 }}>
-            Items whose submittal cycle still blocks ordering — product data, samples, shop drawings, field measurements or other
+      <ScreenHead
+        icon="📑"
+        title="Submittals"
+        caption="Items whose submittal cycle still blocks ordering — product data, samples, shop drawings, field measurements or other. Reads the working draft, not the report."
+        right={
+          <ScopeControl
+            projects={activeProjects}
+            value={projectSel}
+            onChange={setProjectSel}
+            allProjects={allProjects}
+            onAllProjects={setAllProjects}
+          />
+        }
+      />
+
+      <div className="findbar">
+        <div className="findbar__row">
+          <div className="toolgroup toolgroup--on-canvas toolgroup--inline">
+            <span className="toolgroup__label">Filter by what's missing</span>
+            <div className="toolgroup__row" style={{ gap: 6 }}>
+              {CATEGORIES.map((cat) => {
+                const active = typeFilter.includes(cat);
+                const n = byCat(cat).length;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    // A neutral pill with the count INSIDE (lote 67): a submittal category
+                    // isn't a semaphore status, so it doesn't get a semaphore color — but
+                    // it does get the same chip SHAPE as the other screens.
+                    className={`cat-chip${active ? ' is-on' : ''}${n === 0 ? ' is-empty' : ''}`}
+                    aria-pressed={active}
+                    onClick={() => setTypeFilter((f) => (active ? f.filter((x) => x !== cat) : [...f, cat]))}
+                    title={active ? 'Remove this category from the filter' : 'Add this category to the filter (multi-select)'}
+                    style={{ opacity: typeFilter.length && !active && n > 0 ? 0.5 : undefined }}
+                  >
+                    {cat}
+                    <span className="cat-chip__count">{n}</span>
+                  </button>
+                );
+              })}
+              {typeFilter.length > 0 && (
+                <Button variant="ghost" size="sm" onClick={() => setTypeFilter([])} style={{ padding: '5px 10px', color: 'var(--muted)' }}>✕ Clear filters</Button>
+              )}
+            </div>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <select
-            value={projectSel}
-            disabled={allProjects}
-            onChange={(e) => setProjectSel(e.target.value)}
-            style={{
-              height: 34, border: '1px solid var(--hairline)', borderRadius: 'var(--radius-sm)',
-              background: 'var(--canvas)', font: 'var(--text-body)', color: 'var(--body)', padding: '0 10px',
-              cursor: 'pointer', opacity: allProjects ? 0.5 : 1,
-            }}
+        <div className="findbar__row findbar__row--sub">
+          <GroupByBar value={groupBy} onChange={setGroupBy} />
+          <span style={{ flex: 1, minWidth: 0 }} />
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={collapseAll}
+            disabled={collapsibleKeys.length === 0}
+            title={collapsibleKeys.length === 0 ? 'Nothing to collapse — group the list first' : undefined}
           >
-            {activeProjects.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, font: 'var(--text-body)', color: 'var(--ink)', cursor: 'pointer' }}>
-            <input type="checkbox" checked={allProjects} onChange={(e) => setAllProjects(e.target.checked)} style={{ width: 20, height: 20, cursor: 'pointer', accentColor: 'var(--brand-slate)' }} />
-            All Projects
-          </label>
+            {allCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
+          </Button>
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ font: 'var(--text-caption)', color: 'var(--muted)', fontWeight: 600 }}>Filter:</span>
-        {CATEGORIES.map((cat) => {
-          const active = typeFilter.includes(cat);
-          return (
-            <button
-              key={cat}
-              type="button"
-              onClick={() => setTypeFilter((f) => (active ? f.filter((x) => x !== cat) : [...f, cat]))}
-              title={active ? 'Remove this category from the filter' : 'Add this category to the filter (multi-select)'}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer',
-                border: '1px solid var(--hairline)', background: active ? 'color-mix(in srgb, var(--info-border) 12%, white)' : 'var(--canvas)',
-                padding: '5px 12px', borderRadius: 'var(--radius-pill)',
-                opacity: typeFilter.length && !active ? 0.45 : 1,
-                outline: active ? '2px solid var(--info-border)' : 'none', outlineOffset: 1,
-              }}
-            >
-              <span style={{ font: 'var(--text-caption)', fontWeight: 600, color: 'var(--ink)' }}>{cat}</span>
-              <span style={{ font: '700 17px/1.1 var(--font-mono)', color: 'var(--ink)' }}>{byCat(cat).length}</span>
-            </button>
-          );
-        })}
-        {typeFilter.length > 0 && (
-          <Button variant="ghost" size="sm" onClick={() => setTypeFilter([])} style={{ padding: '4px 8px', color: 'var(--muted)' }}>✕ Clear filters</Button>
-        )}
-      </div>
+      <Band label="Blocking the order">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="section-head" style={{ minHeight: 0 }}>
+            <span style={{ font: 'var(--text-title-sm)', color: 'var(--ink)' }}>Waiting on a submittal</span>
+            <span className="section-count">{shown.length}</span>
+            {overdueCount > 0 && (
+              <span className="alert-pill" title="These items needed to be ordered already — the submittal is what's holding them up">
+                ⛔ {overdueCount} already past Buy-By
+              </span>
+            )}
+          </div>
+          <div style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}>
+            Sorted by Buy-By, soonest first. Click a row to open that item on the Material List.
+          </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <GroupByBar value={groupBy} onChange={setGroupBy} />
-        <span style={{ flex: 1 }} />
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={collapseAll}
-          disabled={collapsibleKeys.length === 0}
-          title={collapsibleKeys.length === 0 ? 'Nothing to collapse — group the list first' : undefined}
-          style={{ padding: '6px 10px', color: 'var(--muted)' }}
-        >
-          {allCollapsed ? '⊞ Expand All' : '⊟ Collapse All'}
-        </Button>
-      </div>
-
-      <div style={{ border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: 'var(--canvas)' }}>
-        {/* Fixed layout — long work-package titles wrap instead of dragging the columns. */}
-        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-          <colgroup>
-            {allProjects && <col style={{ width: 150 }} />}
-            <col style={{ width: 190 }} />
-            <col />
-            <col style={{ width: 130 }} />
-            <col style={{ width: 150 }} />
-            <col style={{ width: 108 }} />
-            <col style={{ width: 108 }} />
-            <col style={{ width: 130 }} />
-            <col style={{ width: 36 }} />
-          </colgroup>
-          <thead>
-            <tr style={{ background: 'var(--surface-soft)' }}>
-              {allProjects && <th style={th}>Project</th>}
-              <th style={th}>Work package</th><th style={th}>Item</th><th style={th}>Vendor</th>
-              <th style={th}>Submittal</th><th style={th}>Buy-By</th><th style={th}>On-Site Req.</th>
-              <th style={th}>Status</th><th style={th} />
-            </tr>
-          </thead>
-          <tbody>
-            {(() => {
-              const colCount = (allProjects ? 1 : 0) + 8;
-              const renderRow = (x: Row, key: string) => (
-                <tr
-                  key={key}
-                  onClick={() => jump(x.project.id, x.i.id)}
-                  style={{ cursor: 'pointer' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-soft)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                >
-                  {allProjects && <td style={{ ...td, whiteSpace: 'normal', overflowWrap: 'break-word' }}>{x.project.name}</td>}
-                  <td style={{ ...td, color: 'var(--muted)', whiteSpace: 'normal', overflowWrap: 'break-word' }}>{x.pkg.label}</td>
-                  <td style={{ ...td, whiteSpace: 'normal', overflowWrap: 'break-word' }}>{x.i.description}</td>
-                  <td style={{ ...td, whiteSpace: 'normal', overflowWrap: 'break-word' }}>{x.i.vendor}</td>
-                  <td style={{ ...td, whiteSpace: 'normal' }}>
-                    <SubmittalBadge status={x.i.submittal} />
-                    {(() => {
-                      const extra = submittalBlockers(x.i).filter((b) => b !== 'Product data');
-                      return extra.length ? <div style={{ font: 'var(--text-mono-sm)', color: 'var(--status-order-now-ink)', marginTop: 3 }}>⛔ {extra.join(', ')}</div> : null;
-                    })()}
-                  </td>
-                  <td style={{ ...td, font: 'var(--text-mono)', fontWeight: 600, color: x.days != null && x.days <= 0 ? 'var(--status-order-now-ink)' : 'var(--ink)' }}>
-                    {x.buyby ? fmtMDY(x.buyby) : '—'}
-                  </td>
-                  <td style={{ ...td, font: 'var(--text-mono)' }}>{x.i.onsite ? fmtMDY(x.i.onsite) : 'Confirm Date'}</td>
-                  <td style={td}><StatusBadge status={computeItem(x.i, { window: thresholdsFor(x.project.id).window }).status} /></td>
-                  <td style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>›</td>
+          <div className="data-card">
+            {/* Fixed layout — long work-package titles wrap instead of dragging the columns. */}
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+              <colgroup>
+                {allProjects && <col style={{ width: 150 }} />}
+                <col style={{ width: 190 }} />
+                <col />
+                <col style={{ width: 130 }} />
+                <col style={{ width: 150 }} />
+                <col style={{ width: 108 }} />
+                <col style={{ width: 118 }} />
+                <col style={{ width: 130 }} />
+                <col style={{ width: 36 }} />
+              </colgroup>
+              <thead>
+                <tr style={{ background: 'var(--surface-soft)' }}>
+                  {allProjects && <th style={th}>Project</th>}
+                  <th style={th}>Work package</th><th style={th}>Item</th><th style={th}>Vendor</th>
+                  <th style={th}>Submittal</th><th style={th}>Buy-By</th><th style={th}>On-Site Req.</th>
+                  <th style={th}>Status</th><th style={th} />
                 </tr>
-              );
-              const parts: React.ReactNode[] = [];
-              if (groupBy.length === 0) {
-                parts.push(...shown.map((x, i) => renderRow(x, `r${i}`)));
-              } else {
-                const groups = new Map<string, Row[]>();
-                [...shown].sort((a, b) => groupKey(a).localeCompare(groupKey(b))).forEach((x) => {
-                  const k = groupKey(x);
-                  const g = groups.get(k);
-                  if (g) g.push(x);
-                  else groups.set(k, [x]);
-                });
-                groups.forEach((g, k) => {
-                  const ck = `main|${k}`;
-                  const isCollapsed = collapsed[ck] ?? true; // collapsed to a count row by default
-                  const buys = g.map((x) => x.buyby).filter(Boolean).sort();
-                  const overdue = g.some((x) => x.days != null && x.days <= 0);
-                  parts.push(
-                    <tr
-                      key={`g:${k}`}
-                      onClick={() => toggleCollapsed(ck)}
-                      title="Click to expand / collapse this package"
-                      style={{ background: 'var(--surface-soft)', cursor: 'pointer' }}
-                    >
-                      <td colSpan={colCount} style={{ ...td, font: 'var(--text-caption)', fontWeight: 600, color: 'var(--ink)', whiteSpace: 'normal' }}>
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ color: 'var(--muted)' }}>{isCollapsed ? '▸' : '▾'}</span>
-                          <span>{k}</span>
-                          <span style={{ color: 'var(--muted)', fontWeight: 500 }}>({g.length} item{g.length === 1 ? '' : 's'})</span>
-                          <span style={{ flex: 1 }} />
-                          {buys[0] && <span style={{ font: 'var(--text-mono-sm)', fontWeight: 600, color: overdue ? 'var(--status-order-now-ink)' : 'var(--muted)' }}>Buy-By {fmtMDY(buys[0])}</span>}
-                        </span>
+              </thead>
+              <tbody>
+                {(() => {
+                  const colCount = (allProjects ? 1 : 0) + 8;
+                  const renderRow = (x: Row, key: string) => (
+                    <tr key={key} className="data-row" onClick={() => jump(x.project.id, x.i.id)} title={`Open ${x.i.description} on the Material List`}>
+                      {allProjects && <td style={{ ...td, whiteSpace: 'normal', overflowWrap: 'break-word' }}>{x.project.name}</td>}
+                      <td style={{ ...td, color: 'var(--muted)', whiteSpace: 'normal', overflowWrap: 'break-word' }}>{x.pkg.label}</td>
+                      <td style={{ ...td, whiteSpace: 'normal', overflowWrap: 'break-word' }}>{x.i.description}</td>
+                      <td style={{ ...td, whiteSpace: 'normal', overflowWrap: 'break-word' }}>{x.i.vendor}</td>
+                      <td style={{ ...td, whiteSpace: 'normal' }}>
+                        <SubmittalBadge status={x.i.submittal} />
+                        {(() => {
+                          const extra = submittalBlockers(x.i).filter((b) => b !== 'Product data');
+                          return extra.length ? <div style={{ font: 'var(--text-mono-sm)', color: 'var(--alert-ink)', marginTop: 3 }}>⛔ {extra.join(', ')}</div> : null;
+                        })()}
                       </td>
-                    </tr>,
-                    ...(isCollapsed ? [] : g.map((x, i) => renderRow(x, `g:${k}:r${i}`))),
+                      <td style={{ ...td, font: 'var(--text-mono)', fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: x.days != null && x.days <= 0 ? 'var(--alert-ink)' : 'var(--ink)' }}>
+                        {x.buyby ? fmtMDY(x.buyby) : '—'}
+                      </td>
+                      {/* No date, the cell used to ask "Confirm Date" in the same ink and
+                          same body as the dates next to it, i.e. a prompt read as data.
+                          Dimmed and in label body it reads as what it is. */}
+                      <td style={{ ...td, font: 'var(--text-mono)', fontVariantNumeric: 'tabular-nums' }}>
+                        {x.i.onsite
+                          ? fmtMDY(x.i.onsite)
+                          : <span style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}>Set a date</span>}
+                      </td>
+                      <td style={td}><StatusBadge status={computeItem(x.i, { window: thresholdsFor(x.project.id).window }).status} /></td>
+                      <td style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>›</td>
+                    </tr>
                   );
-                });
-              }
-              if (shown.length === 0) {
-                parts.push(<tr key="empty"><td colSpan={colCount} style={{ ...td, color: 'var(--muted)', textAlign: 'center' }}>No blocking submittals — clear.</td></tr>);
-              }
-              return parts;
-            })()}
-          </tbody>
-        </table>
-      </div>
+                  const parts: React.ReactNode[] = [];
+                  if (groupBy.length === 0) {
+                    parts.push(...shown.map((x, i) => renderRow(x, `r${i}`)));
+                  } else {
+                    const groups = new Map<string, Row[]>();
+                    [...shown].sort((a, b) => groupKey(a).localeCompare(groupKey(b))).forEach((x) => {
+                      const k = groupKey(x);
+                      const g = groups.get(k);
+                      if (g) g.push(x);
+                      else groups.set(k, [x]);
+                    });
+                    groups.forEach((g, k) => {
+                      const ck = `main|${k}`;
+                      const isCollapsed = collapsed[ck] ?? true; // collapsed to a count row by default
+                      const buys = g.map((x) => x.buyby).filter(Boolean).sort();
+                      const overdue = g.some((x) => x.days != null && x.days <= 0);
+                      parts.push(
+                        <tr key={`g:${k}`} className="group-row" onClick={() => toggleCollapsed(ck)} title="Click to expand / collapse this package">
+                          <td colSpan={colCount} style={{ ...td, font: 'var(--text-caption)', fontWeight: 600, color: 'var(--ink)', whiteSpace: 'normal' }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ color: 'var(--muted)' }}>{isCollapsed ? '▸' : '▾'}</span>
+                              <span>{k}</span>
+                              <span style={{ font: 'var(--text-mono)', fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--muted)' }}>{g.length}</span>
+                              <span style={{ flex: 1 }} />
+                              {buys[0] && <span style={{ font: 'var(--text-mono-sm)', fontWeight: 600, color: overdue ? 'var(--alert-ink)' : 'var(--muted)' }}>Buy-By {fmtMDY(buys[0])}</span>}
+                            </span>
+                          </td>
+                        </tr>,
+                        ...(isCollapsed ? [] : g.map((x, i) => renderRow(x, `g:${k}:r${i}`))),
+                      );
+                    });
+                  }
+                  if (shown.length === 0) {
+                    parts.push(
+                      <tr key="empty"><td colSpan={colCount} style={{ padding: 0 }}>
+                        <EmptyState>{typeFilter.length ? 'Nothing is blocked by these categories.' : 'No submittal is holding up a purchase.'}</EmptyState>
+                      </td></tr>,
+                    );
+                  }
+                  return parts;
+                })()}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Band>
     </div>
   );
 }

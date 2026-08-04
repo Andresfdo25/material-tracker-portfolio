@@ -169,6 +169,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           items: d.items.map((it) => (it.wpId === wpId ? { ...it, report: snapshot(it) } : it)),
         }));
       },
+      savePackagesToReport: (wpIds) => {
+        const idSet = new Set(wpIds);
+        captureUndo(`Saved ${wpIds.length} package${wpIds.length === 1 ? '' : 's'} to report`);
+        setDb((d) => ({
+          ...d,
+          packages: d.packages.map((p) => (idSet.has(p.id) ? { ...p, reportSince: now() } : p)),
+          items: d.items.map((it) => (idSet.has(it.wpId) ? { ...it, report: snapshot(it) } : it)),
+        }));
+      },
       saveAllToReport: (projectId) => {
         captureUndo('Saved ALL packages to report');
         setDb((d) => {

@@ -4,7 +4,7 @@
 // logic.test.ts covers it. Row classification lives in `materialsImport.ts` (specific
 // to that import) and the demo database in `../seed/demoData.ts`.
 import { VENDORS_SEED, WP_CATALOG } from '../seed/catalogs';
-import type { Cfg, ComputedItem, Db, DeliveryKind, DeliveryRecord, InstallRecord, ItemStage, ItemStatus, MaterialItem, ReportSnapshot, SubmittalCompStatus, Thresholds, WorkPackage } from './types';
+import type { Cfg, ComputedItem, Db, DeliveryKind, DeliveryRecord, InstallRecord, ItemStage, ItemStatus, MaterialItem, Project, ReportSnapshot, SubmittalCompStatus, Thresholds, WorkPackage } from './types';
 
 /* ----------------------------------------------------------------- date utils */
 // Real "today" — this is a live tracker, not a frozen demo, so buy-by dates and the
@@ -41,6 +41,15 @@ export function fmtMDY(iso: string): string {
   const [y, m, d] = String(iso ?? '').split('-');
   if (!y || !m || !d) return iso ?? '';
   return `${m}/${d}/${y}`;
+}
+
+/** MM/DD with the year dropped — for a column that repeats a date many times under a
+ * heading that already states the year (the timeline's collapsed tooltip). Never use it
+ * where the date stands alone: a bare 01/05 in December is genuinely ambiguous. */
+export function fmtMD(iso: string): string {
+  const [y, m, d] = String(iso ?? '').split('-');
+  if (!y || !m || !d) return iso ?? '';
+  return `${m}/${d}`;
 }
 
 /** Compact MMDDYYYY stamp — the exported PDF's default filename ("…- 07222026"). */
@@ -123,6 +132,16 @@ export function submittalBlockers(r: SubR): string[] {
   if (r.fieldReq && r.fieldStatus !== 'approved') out.push('Field measurements');
   if (r.otherReq && r.otherStatus !== 'approved') out.push(r.otherNote.trim() ? `Other (${r.otherNote.trim()})` : 'Other');
   return out;
+}
+/** A scheduled field-measure visit that nobody has confirmed yet. The date is a PLAN,
+ * not a record: it says when we mean to go, never that we went. The one thing that says
+ * the measurements were actually taken is the Field measurements component reading
+ * Approved — so until it does, the visit is still open and its ◆ stays on the Overview
+ * timeline, pinned to today once the date is past. `fieldReq` deliberately does NOT gate
+ * this: an unrequired component is one that doesn't block the ORDER, which has nothing to
+ * do with whether the crew went out. */
+export function fieldMeasurePending(r: Pick<ReportSnapshot, 'fieldDate' | 'fieldStatus'>): boolean {
+  return !!r.fieldDate && r.fieldStatus !== 'approved';
 }
 /** Item still awaiting submittal approval — drives the optional client-PDF summary:
  * not yet delivered and at least one submittal component (product data, samples, shop
@@ -443,6 +462,52 @@ export function stagePatch(stage: string, date: string, it: StageWriteTarget): P
   return {};
 }
 
+/** Which stage moves an item accepts RIGHT NOW, already arbitrated against `stagePatch`
+ * (lote 64). It exists because the verdict is DOMAIN, not presentation: several surfaces of
+ * the Overview board offer stage buttons — the mosaic's per-package modal, the late
+ * deliveries modal, and the rows inside them — and each one re-deriving "would this write
+ * land?" is how a button ends up looking clickable and doing nothing.
+ *
+ * `installVia` says HOW the installed close happens, not just whether: once the item has an
+ * installation log, that log owns `installed` (CLAUDE.md invariant) and a `setItemStage` would
+ * be overwritten inside the same patch, so the close has to be registered as units. */
+export interface StageMoves {
+  /** Mark it received into the warehouse. Only from 'pending'. */
+  toWarehouse: boolean;
+  /** Mark it on site. In a supply-only package THIS is the close-out. */
+  toSite: boolean;
+  /** Close it out as installed — always '' in a supply-only package (somebody else
+   * installs it) and once it is already installed. */
+  installVia: 'stage' | 'install-log' | '';
+  /** Why a manual stage write would be refused here ('' = it lands). Carried even when
+   * some move IS available, because it is a per-button answer: an OFCI item takes the
+   * install button and refuses warehouse, and the disabled button has to say which of the
+   * three reasons it is. */
+  stageBlocked: '' | 'log' | 'backorder' | 'ofci';
+}
+export function stageMoves(it: MaterialItem, supplyOnly = false): StageMoves {
+  const logOwns = logDrivesStage(it.deliveries);
+  const ofci = isOfci(it.po);
+  // The two reasons `stagePatch` refuses to write the RECEIPT — owner-furnished material
+  // and a half-arrived order. They only matter while the item is not received yet: moving
+  // an already-received crate to the jobsite writes `siteDate` and nothing else.
+  const noReceipt = ofci || hasOpenBackorder(it);
+  const stage = itemStage(it);
+  const toWarehouse = !logOwns && !noReceipt && stage === 'pending';
+  const toSite = !logOwns && (stage === 'warehouse' || (stage === 'pending' && !noReceipt));
+  const room = pendingInstallQty(it);
+  const viaLog = it.installations.length > 0 || logOwns;
+  const installVia: StageMoves['installVia'] = supplyOnly || it.installed ? ''
+    : viaLog ? (room != null && room > 0 ? 'install-log' : '')
+      : 'stage';
+  return {
+    toWarehouse,
+    toSite,
+    installVia,
+    stageBlocked: logOwns ? 'log' : ofci ? 'ofci' : hasOpenBackorder(it) ? 'backorder' : '',
+  };
+}
+
 /** The statuses the UI offers as filters, in the order they are shown — the status
  * filter bar and the per-package chips both walk this list. */
 export const FILTERABLE: ItemStatus[] = ['order-now', 'order-soon', 'needs-data', 'planned', 'ordered', 'partial', 'delivered', 'on-site', 'installed', 'na'];
@@ -483,6 +548,103 @@ export function isClosed(it: StageR, supplyOnly = false): boolean {
  * ours. Kept named `awaitingInstall` for its callers; `supplyOnly` narrows it. */
 export function awaitingInstall(it: StageR, supplyOnly = false): boolean {
   return it.delivered && !isClosed(it, supplyOnly);
+}
+
+/** How far the WHOLE package has got: the furthest stage that EVERY one of its items has
+ * reached. The timeline's collapsed milestone needs this because its dot speaks for
+ * several packages at once, and the only thing the dot itself can say is its ring — "all
+ * closed" or "not all closed". Everything between *we bought it* and *it is on the floor*
+ * read identically there.
+ *
+ * It is a MIN, not a count: the package is 'on-site' only when nothing in it is still in
+ * the warehouse. Part-way is deliberately NOT a tier — the drill-downs exist for that, and
+ * a "mixed" mark on a dot that already carries a ring, a size and a colour is exactly the
+ * saturation this ladder is meant to avoid.
+ *
+ * Two conventions it inherits rather than re-decides:
+ *  · **Bought = a non-empty PO#**, so OFCI counts as bought — `mosaicCards` says it best:
+ *    it is nobody's left to buy. An OFCI item never gets `delivered` either (`stagePatch`
+ *    refuses it), so a package holding one tops out at 'ordered' unless it is installed.
+ *    That is correct, not a gap: where owner-furnished material sits is not tracked here.
+ *  · **Supply-only closes on site**, so 'installed' is clamped away — installing is not
+ *    ours and 📍 IS the finish line (same rule as `isClosed` / `closingStage`). */
+export type PkgReadiness = 'none' | 'ordered' | 'warehouse' | 'on-site' | 'installed';
+const READINESS_LADDER: PkgReadiness[] = ['none', 'ordered', 'warehouse', 'on-site', 'installed'];
+export function packageReadiness(items: (StageR & Pick<ReportSnapshot, 'po'>)[], supplyOnly = false): PkgReadiness {
+  if (!items.length) return 'none';
+  let rank = 4;
+  items.forEach((it) => {
+    const stage = itemStage(it);
+    const r = stage === 'installed' ? 4
+      : stage === 'on-site' ? 3
+        : stage === 'warehouse' ? 2
+          : String(it.po ?? '').trim() ? 1 : 0;
+    if (r < rank) rank = r;
+  });
+  if (supplyOnly && rank === 4) rank = 3;
+  return READINESS_LADDER[rank];
+}
+
+/** Position on the ladder, so a caller can take the min of several packages' readiness
+ * without re-deriving the order (the timeline's collapsed dot does exactly that). */
+export function readinessRank(r: PkgReadiness): number {
+  return READINESS_LADDER.indexOf(r);
+}
+
+/** How a readiness tier introduces itself in the timeline tooltip: a ✓ in `token` plus
+ * `word`. Lives here rather than in the screen for the usual fast-refresh reason (a .tsx
+ * that exports anything but components loses it), beside `STAGE_META` and
+ * `MOSAIC_BADGE_META` for the same reason those do.
+ *
+ * Every `token` is theme-FLAT — a brand or status colour that is never redeclared in the
+ * dark block — because the tooltip's background (`--brand-dark`) is itself theme-flat. A
+ * token with a dark-mode value would drift away from a surface that never moves.
+ * `--alert-on-dark` exists precisely so the red rung can obey that rule too (`--alert-ink`
+ * could not: it flips between themes).
+ *
+ * The WORD rides beside the ✓ on purpose, and it is the anti-saturation decision: four
+ * greens nobody can distinguish are not four tiers, and colour alone would need four more
+ * entries on a legend that already carries several. */
+export interface ReadinessMark { glyph: string; word: string; token: string }
+export const READINESS_META: Record<PkgReadiness, ReadinessMark> = {
+  // 'none' is the one rung that is an ALARM rather than progress: the Req. date is coming
+  // (or gone) and not one item has a PO#. It earns the pastel red and a ·, not a ✓ —
+  // nothing has been cleared, so a check mark there would be a lie.
+  none: { glyph: '·', word: 'not ordered', token: '--alert-on-dark' },
+  ordered: { glyph: '✓', word: 'ordered', token: '--status-ordered' },
+  warehouse: { glyph: '✓', word: 'warehouse', token: '--brand-orange' },
+  'on-site': { glyph: '✓', word: 'on site', token: '--brand-teal' },
+  installed: { glyph: '✓', word: 'installed', token: '--success-border' },
+};
+/** `READINESS_META` with the one scope-dependent relabel applied: reaching the jobsite is
+ * the FINISH for a supply-only package, so there it earns the terminal green and says
+ * "delivered" instead of the mid-ladder "on site". Always returns a mark — "nothing
+ * ordered yet" is an answer the tooltip has to give, not an absence. */
+export function readinessMark(r: PkgReadiness, supplyOnly = false): ReadinessMark {
+  if (r === 'on-site' && supplyOnly) return { glyph: '✓', word: 'delivered', token: '--success-border' };
+  return READINESS_META[r];
+}
+
+/** What CLOSES an item currently awaiting site/install, decided against its live draft
+ * (lote 63). A supply-only package closes at 📍 on site, so a warehouse row's one move is
+ * there and an on-site row has nothing left to close via this helper. An install package
+ * closes at 🔩 installed, with an intermediate 📍 release for a row still in the
+ * warehouse. Null when the delivery log owns the stage — `stagePatch` would refuse a
+ * manual write anyway (empty patch), so the caller disables its button instead of
+ * offering a click that does nothing. */
+export function closeVia(it: Pick<MaterialItem, 'deliveries' | 'delivered' | 'siteDate' | 'installed' | 'installations'>, supplyOnly: boolean): 'on-site' | 'installed' | null {
+  if (logDrivesStage(it.deliveries)) return null;
+  const stage = itemStage(it);
+  if (supplyOnly) return stage === 'warehouse' ? 'on-site' : null;
+  if (stage === 'warehouse') return 'on-site';
+  // The INSTALL log owns `installed` the exact same way the delivery log owns
+  // `delivered` (lote 44's cascade in `applyItemPatch`, §"install QUANTITIES"): once
+  // `installations` has entries, a manual `{ installed: true }` patch is silently
+  // re-derived back off the log's own total the moment it lands. Offering the button
+  // there would look like it worked and write nothing real — register the rest through
+  // Breakdown Install instead.
+  if (stage === 'on-site') return it.installations.length ? null : 'installed';
+  return null;
 }
 
 /* How urgent it is to get an awaiting-install item to the jobsite, driven by the
@@ -546,6 +708,270 @@ export function daysLate(it: Pick<ReportSnapshot, 'shipDate'>): number | null {
 /** Days the item has been sitting received (warehouse or site) — null without a date. */
 export function daysWaiting(it: Pick<ReportSnapshot, 'receivedDate'>): number | null {
   return it.receivedDate ? diffDays(today(), it.receivedDate) : null;
+}
+
+/* Aging bands for material that is received but not closed out yet — the question the
+ * supply-only table exists to answer. NOT a fourth clock: the three clocks each read a
+ * promised DATE and say whether it has passed, while this one reads elapsed time against
+ * a fixed rule of thumb — two weeks is worth a look, four weeks means someone has to move
+ * it. It deliberately does NOT use the `window` threshold: that one belongs to the three
+ * clocks and widening it should not repaint a column about how long a crate has been in
+ * the warehouse. */
+export type WaitSeverity = 'warning' | 'urgent';
+export function waitSeverity(days: number | null): WaitSeverity | null {
+  if (days == null) return null;
+  if (days > 30) return 'urgent';
+  return days >= 14 ? 'warning' : null;
+}
+
+/* ------------------------------------------------ installation progress mosaic
+ * SPEC-overview-redesign §4 — one card per project, one bar per work package: how far
+ * each package got toward its closing stage. It answers a DIFFERENT question from the
+ * stage table it replaces. That one lists what is already in hand; this one measures the
+ * WHOLE scope, so a package with nothing received yet still gets a bar (at 0%) and says
+ * why it is there. Everything below is pure and tested: the sort order and the two 0%/100%
+ * edges are exactly the kind of rule that rots without a word of warning inside a render. */
+
+/** Why a package sits where it does, in one word — the flag beside its name. The two
+ * zero cases are deliberately NOT the same alarm: nothing up because nobody installed it
+ * is an installation problem (⚠), nothing up because nothing arrived is a procurement one
+ * (🚚). Painting both red teaches the PM to ignore red. `null` = under way, needs no word. */
+export type PackageProgressFlag = 'complete' | 'not-started' | 'awaiting-delivery' | null;
+export function packageProgressFlag(closed: number, inHand: number, total: number): PackageProgressFlag {
+  if (!total) return null;
+  if (closed === total) return 'complete';
+  if (closed > 0) return null;
+  return inHand > 0 ? 'not-started' : 'awaiting-delivery';
+}
+
+/** The integer the bar prints. 100 and 0 are verdicts — "done" and "nothing yet" — so
+ * neither is ever reached by ROUNDING: 199 of 200 closed reads 99%, and 1 of 200 reads
+ * 1%. The segment widths use the raw ratio, so the clamp costs under a pixel and buys a
+ * number that never contradicts the flag right next to it. */
+export function progressPct(closed: number, total: number): number {
+  if (!total) return 0;
+  if (closed === total) return 100;
+  if (closed === 0) return 0;
+  return Math.min(99, Math.max(1, Math.round((closed / total) * 100)));
+}
+
+/** djb2 → a slot in [0, n). Stable per id, which is the whole point: colour encodes
+ * project IDENTITY, not status, so it must survive a re-sort. Numbering the cards in
+ * render order would repaint half the mosaic the moment one project's percentage moves
+ * it past another. */
+export function stableSlot(id: string, n: number): number {
+  let h = 5381;
+  for (let i = 0; i < id.length; i++) h = ((h << 5) + h + id.charCodeAt(i)) >>> 0;
+  return h % n;
+}
+/** How many identity hues the mosaic rotates through (`--mos-*` in colors.css). */
+export const MOSAIC_SLOTS = 6;
+
+/** One item under a badge — carried here rather than re-derived by the drill-down, so the
+ * count on the badge and the list it opens can never disagree. Render-time view model,
+ * never persisted. */
+export interface MosaicItem {
+  id: string; wpId: string; wpLabel: string; description: string;
+  qty: number | string; um: string;
+  /** Whatever date the badge is about — received, on site, installed, required on site. */
+  date: string;
+  /** One line of badge-specific detail (what is still owed, which way it travelled). */
+  note?: string;
+}
+
+/** A group of rows under the heading of their work package. */
+export interface PackageGroup<T> { wpId: string; wpLabel: string; rows: T[] }
+/** Groups ANY row that knows which package it belongs to — used by the badge drill-down and
+ * the quick-edit window, whose lists can now be an entire project rather than a single
+ * package. Generic because the two windows that group have different row shapes
+ * (`MosaicItem`, `QuickEditRow`) and what they can't have is two different orderings: the
+ * package label stops being a column repeated on every row and becomes its group's heading
+ * instead.
+ *
+ * Preserves arrival order within each package (the list already arrives sorted by whoever
+ * opened the window) and sorts the packages by label, the way the rest of the app reads
+ * them. */
+export function groupByPackage<T extends { wpId: string; wpLabel: string }>(rows: T[]): PackageGroup<T>[] {
+  const m = new Map<string, PackageGroup<T>>();
+  rows.forEach((r) => {
+    const g = m.get(r.wpId);
+    if (g) g.rows.push(r);
+    else m.set(r.wpId, { wpId: r.wpId, wpLabel: r.wpLabel, rows: [r] });
+  });
+  return [...m.values()].sort((a, b) => a.wpLabel.localeCompare(b.wpLabel, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+/** The badge row under the bars, and it is NOT the same row in both scopes.
+ *
+ * When we install, the useful ones are physical: where is the material standing right
+ * now (🏭 warehouse → 📍 on site → 🔩 installed). When we only supply, on site IS the end
+ * of the line, so those three would be the bar again; what the PM chases instead are the
+ * three things that keep material from getting there — nothing bought yet, part of the
+ * order still owed, and material that left the vendor's ideal path (through our warehouse,
+ * or pulled off our own shelves).
+ *
+ * **🛒 not-ordered is the one badge both scopes carry.** It used to be supply-only, which
+ * read as if buying were somebody else's problem on the projects we also install — and it
+ * is the same problem there, one stage earlier: the three physical badges can only count
+ * material that already exists somewhere, so a package nobody has ordered was invisible in
+ * the badge row of exactly the cards where the PM does the ordering. It leads the row in
+ * both scopes because it is where the lifecycle starts. */
+export type MosaicBadgeKey = Exclude<ItemStage, 'pending'> | 'not-ordered' | 'backorder' | 'detour';
+export interface MosaicBadge { key: MosaicBadgeKey; items: MosaicItem[] }
+const INSTALL_BADGES: MosaicBadgeKey[] = ['not-ordered', 'warehouse', 'on-site', 'installed'];
+const SUPPLY_BADGES: MosaicBadgeKey[] = ['not-ordered', 'backorder', 'detour'];
+/** How each badge introduces itself — `label` finishes the sentence "N …" in the tooltip
+ * and the aria-label, `column` titles the date column of the list it opens. */
+export const MOSAIC_BADGE_META: Record<MosaicBadgeKey, { icon: string; label: string; column: string }> = {
+  warehouse: { icon: '🏭', label: 'in the warehouse', column: 'Received' },
+  'on-site': { icon: '📍', label: 'on site, not installed yet', column: 'On site since' },
+  installed: { icon: '🔩', label: 'installed', column: 'Installed' },
+  'not-ordered': { icon: '🛒', label: 'with no PO# yet — nothing bought', column: 'On-Site Req.' },
+  backorder: { icon: '🚚', label: 'with part of the order still owed', column: 'Received' },
+  detour: { icon: '📦', label: 'off the direct route — through our warehouse or out of stock', column: 'Last movement' },
+};
+
+/** Which way this item left the straight line from the vendor to the jobsite, if it did —
+ * `null` when it went (or is still going) direct. Goes through `deliveryLogRows`, not
+ * `it.deliveries`, so a warehouse hop still counts after the material moved on to site;
+ * that helper is what turns "moved with the buttons" into a row and keeps OFCI out —
+ * owner-furnished material never travels our route, so it has no route to leave. */
+export type DetourKind = 'warehouse' | 'stock' | null;
+export function detourOf(r: ReportSnapshot, deliveries: DeliveryRecord[]): DetourKind {
+  const rows = deliveryLogRows({ ...r, deliveries });
+  if (rows.some((d) => d.kind === 'stock')) return 'stock';
+  if (rows.some((d) => d.kind === 'wh-in')) return 'warehouse';
+  return rows.some((d) => d.synthetic) && itemStage(r) === 'warehouse' ? 'warehouse' : null;
+}
+
+export interface MosaicPackage {
+  wpId: string; wpLabel: string;
+  total: number;
+  /** Reached the package's own closing stage — 🔩 installed, or 📍 on site if supply only. */
+  closed: number;
+  pending: number;
+  /** Bought (it has a PO#) and not closed yet — the middle zone of a supply-only bar. What
+   * is left over, `pending - ordered`, is material nobody has ordered at all. */
+  ordered: number;
+  /** Received, closed or not. Only used to tell the two zero cases apart. */
+  inHand: number;
+  pct: number;
+  flag: PackageProgressFlag;
+  /** Deep-link target: the first item still short of the closing stage, else the first. */
+  itemId: string;
+}
+
+export interface MosaicCard {
+  projectId: string; projectName: string;
+  /** Follows the PROJECT (`projectClosesAtSite`), like the Portfolio grouping does — it
+   * picks the header icon and which three badges the card carries. Each PACKAGE is still
+   * measured against its own closing stage, so a mixed project stays honest on one card. */
+  scope: 'install' | 'supply';
+  slot: number;
+  packages: MosaicPackage[];
+  total: number; closed: number; pct: number;
+  /** The biggest package in THIS card — bar widths are proportional within a card only:
+   * across cards a small project would shrink to a stub, and the header rollup already
+   * carries how big it is. */
+  widest: number;
+  /** Three when we only supply, four when we install — in display order, see
+   * `MosaicBadgeKey`. */
+  badges: MosaicBadge[];
+}
+
+/** Build the mosaic. Takes the projects and packages it should chart ALREADY filtered —
+ * archived projects and the supply-only/install split are the caller's call, and each
+ * package is still measured against its own closing stage, so either scope works.
+ *
+ * Nothing is excluded from the counts: dropping "not ordered yet" items would empty the
+ * denominator of exactly the packages the 🚚 flag exists to point at. Owner-furnished
+ * material we DO install (the CI in OFCI), and the Portfolio bar counts it for that
+ * reason — two "how complete is this project" numbers with different denominators on one
+ * screen is a bug report waiting to happen. */
+export function mosaicCards(projects: Project[], packages: WorkPackage[], items: MaterialItem[]): MosaicCard[] {
+  const byWp = new Map<string, MaterialItem[]>();
+  items.forEach((it) => {
+    if (!it.report) return; // Overview reads published snapshots, here as everywhere else
+    const a = byWp.get(it.wpId);
+    if (a) a.push(it); else byWp.set(it.wpId, [it]);
+  });
+  return projects.map((project): MosaicCard | null => {
+    const own = packages.filter((p) => p.projectId === project.id);
+    const scope = projectClosesAtSite(project, own) ? 'supply' : 'install';
+    const bins = new Map<MosaicBadgeKey, MosaicItem[]>((scope === 'supply' ? SUPPLY_BADGES : INSTALL_BADGES).map((k) => [k, []]));
+    const bin = (key: MosaicBadgeKey, row: MosaicItem) => bins.get(key)?.push(row);
+    const pkgs: MosaicPackage[] = [];
+    own.forEach((pkg) => {
+      const rows = byWp.get(pkg.id) ?? [];
+      // No items at all is the data-entry state — a package somebody just created — not a
+      // package at zero progress, so it never gets a bar.
+      if (!rows.length) return;
+      const supplyOnly = closesAtSite(pkg, project);
+      let closed = 0;
+      let inHand = 0;
+      let ordered = 0;
+      let target = '';
+      rows.forEach((it) => {
+        const r = it.report!;
+        const stage = itemStage(r);
+        const done = isClosed(r, supplyOnly);
+        const base = { id: it.id, wpId: pkg.id, wpLabel: pkg.label, description: r.description, qty: r.qty, um: r.um };
+        const bought = !!String(r.po ?? '').trim(); // OFCI counts: it is nobody's left to buy
+        if (stage !== 'pending') inHand++;
+        if (done) closed++;
+        else {
+          if (!target) target = it.id;
+          if (bought) ordered++;
+        }
+        // Where it physically stands — the three badges the card carries when we install it.
+        if (stage !== 'pending') {
+          bin(stage, {
+            ...base,
+            date: stage === 'installed' ? r.installedDate : stage === 'on-site' ? r.siteDate : r.receivedDate,
+          });
+        }
+        // …and what is holding it up. 🛒 lands in both scopes (see `MosaicBadgeKey`); the
+        // other two are the supply-only row. They overlap on purpose: one crate can be
+        // un-ordered today, on backorder next month and still take the warehouse detour,
+        // and each of those is a different phone call.
+        if (!bought) bin('not-ordered', { ...base, date: r.onsite });
+        if (hasOpenBackorder(r)) {
+          const back = backorderQty(r);
+          bin('backorder', { ...base, date: r.receivedDate, note: back == null ? '' : `${back}${r.um ? ` ${r.um}` : ''} still owed` });
+        }
+        const detour = detourOf(r, it.deliveries);
+        if (detour) {
+          bin('detour', {
+            ...base,
+            date: r.siteDate || r.receivedDate,
+            note: detour === 'stock' ? 'pulled from our own stock'
+              : r.siteDate ? 'through the warehouse, now on site' : 'sitting in the warehouse',
+          });
+        }
+      });
+      pkgs.push({
+        wpId: pkg.id, wpLabel: pkg.label, total: rows.length, closed, pending: rows.length - closed,
+        ordered, inHand, pct: progressPct(closed, rows.length), flag: packageProgressFlag(closed, inHand, rows.length),
+        itemId: target || rows[0].id,
+      });
+    });
+    if (!pkgs.length) return null;
+    // Descending inside the card: the finished packages stack at the top and the stalled
+    // one sits on the bottom edge, right where the eye leaves the card.
+    pkgs.sort((a, b) => b.pct - a.pct || b.total - a.total || a.wpLabel.localeCompare(b.wpLabel, undefined, { numeric: true, sensitivity: 'base' }));
+    const total = pkgs.reduce((s, p) => s + p.total, 0);
+    const closed = pkgs.reduce((s, p) => s + p.closed, 0);
+    return {
+      projectId: project.id, projectName: project.name, scope, slot: stableSlot(project.id, MOSAIC_SLOTS),
+      packages: pkgs, total, closed, pct: progressPct(closed, total),
+      widest: Math.max(...pkgs.map((p) => p.total)),
+      badges: [...bins.entries()].map(([key, items]) => ({ key, items })),
+    };
+  })
+    .filter((c): c is MosaicCard => c !== null)
+    // And ASCENDING between cards — deliberately the other direction: the project that
+    // needs attention lands top-left, where reading starts.
+    .sort((a, b) => a.pct - b.pct || b.total - a.total || a.projectName.localeCompare(b.projectName, undefined, { numeric: true, sensitivity: 'base' }));
 }
 
 export function computeItem(it: ReportSnapshot, cfg?: Cfg): ComputedItem {
@@ -616,10 +1042,25 @@ export function applyItemPatch(it: MaterialItem, patch: Partial<MaterialItem>): 
       next.ordered = po !== '';
     }
   }
+  // A NEW field-measure date re-opens the confirmation. Rescheduling an already approved
+  // package — the second visit, because the wall moved or the dimensions came back wrong
+  // — has to put the component back to Pending, or the ◆ would never return to the
+  // timeline and the visit would be invisible. An explicit fieldStatus in the same patch
+  // wins: that caller is stating the status, not scheduling.
+  if ('fieldDate' in patch && !('fieldStatus' in patch) && next.fieldDate && next.fieldDate !== it.fieldDate) {
+    next.fieldStatus = 'pending';
+  }
   if (next.delivered && !it.delivered && hasOpenBackorder(next)) next.delivered = false;
-  // Received-date stamp: the first flip to delivered stamps today (unless the patch
-  // itself carries a date); un-receiving clears it. Manual receivedDate edits pass through.
-  if (next.delivered && !it.delivered && !next.receivedDate) next.receivedDate = today();
+  // Received-date stamp: the first flip to delivered stamps the day it happened; un-receiving
+  // clears it. Manual receivedDate edits pass through.
+  //
+  // "The day it happened" is today only when nothing else in the patch says otherwise. A
+  // patch that moves the item straight to on-site carries the day the truck unloaded THERE,
+  // and that is the same event as the receipt — stamping today instead would record when the
+  // PM clicked rather than when the material showed up (lote 64).
+  if (next.delivered && !it.delivered && !next.receivedDate) {
+    next.receivedDate = ('siteDate' in patch && next.siteDate) ? next.siteDate : today();
+  }
   if (!next.delivered && it.delivered && !('receivedDate' in patch)) next.receivedDate = '';
   // ---- Install cycle: warehouse → jobsite → installed ----
   // Marking INSTALLED on an item that was never received implies the receipt (material
@@ -635,7 +1076,9 @@ export function applyItemPatch(it: MaterialItem, patch: Partial<MaterialItem>): 
   //    reads as installed and still owes material, which is the truth.
   if ('installed' in patch && next.installed && !next.delivered && !isOfci(next.po) && !hasOpenBackorder(next)) {
     next.delivered = true;
-    if (!next.receivedDate) next.receivedDate = today();
+    // Same rule as the stamp above: the implied receipt happened on the day it went up, not
+    // on the day somebody typed it in.
+    if (!next.receivedDate) next.receivedDate = next.installedDate || today();
   }
   // Un-receiving invalidates everything downstream — it never reached the site, let
   // alone the wall. (OFCI is exempt: its `delivered` is forced false by design.) The

@@ -24,3 +24,26 @@
 
   --container-max: 1280px;
 }
+
+/* ============================================ riel de indicadores (Overview, lote 62) */
+/* Los tres relojes del tablero sobre una grilla de SIETE columnas —una por gauge—, cada
+ * grupo ocupando tantas como indicadores tiene (`gridColumn: span n`, inline en
+ * `ClockGroup`). Es grid y no flex a propósito: con flex, el grupo que envolvía a un
+ * renglón propio crecía hasta el ancho completo. Acá el riel no envuelve nunca — cambia de
+ * cantidad de columnas y listo. */
+.ov-rail {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+@media (max-width: 944px) {
+  .ov-rail {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@media (max-width: 620px) {
+  .ov-rail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

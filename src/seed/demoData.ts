@@ -29,6 +29,11 @@
 // aren't the buy-by clock are represented too — a late delivery (promised ship date
 // already passed) and a partially installed item — and one package is supply-only, so
 // it closes at 'on-site' rather than at 'installed'.
+//
+// Both states of the field-measure milestone are seeded as well (ARCHITECTURE.md §8): one
+// package whose visit date has passed with nobody confirming it, so its ◆ is pinned to
+// today and pulsing, and one whose visit is still ahead. Without them the timeline legend
+// would name a marker the board never shows.
 import {
   addDays, DEFAULT_THRESHOLDS, INSTALL_DEFAULTS, parseISO, snapshot, SUBMITTAL_DEFAULTS, toISO, today,
 } from '../store/logic';
@@ -87,22 +92,36 @@ export function buildDb(): Db {
 
   const items = [
     /* ---------------------------------------------- Northgate · 10.21 Compartments */
+    // This package also carries the OVERDUE FIELD-MEASURE VISIT (ARCHITECTURE.md §8):
+    // partitions are cut to the opening, so somebody has to go measure before anything is
+    // fabricated. `fieldDate` is five days ago and nobody has confirmed the measurements,
+    // so the ◆ doesn't drop off the timeline — it pins itself onto today's line and
+    // pulses. One date per package, which is how the toolbar stamps it.
+    //
     // ORDER NOW, and blocked by an unapproved submittal on top of it — the worst cell on
-    // the board and the one the Overview headline is built to surface.
+    // the board and the one the Overview headline is built to surface. This is also the
+    // row where the field measure is a declared submittal blocker (`fieldReq`), so the
+    // Blocked-by-submittal breakdown names it.
     mk({
       wpId: 'wp-n-comp', description: 'Toilet partitions — HDPE, floor-mounted, powder-coat', qty: 14, um: 'ea',
       vendor: 'Harlow Partition Co.', lead: 6, onsite: buyBy(6, -3), submittal: 'In Review',
-      notes: 'Colour to match architect’s finish schedule.',
+      fieldDate: day(-5), fieldReq: true, fieldStatus: 'pending' as const,
+      notes: 'Colour to match architect’s finish schedule. Field measure still not taken.',
     }, true),
-    // Order soon — buy-by inside the default 7-day window.
+    // Order soon — buy-by inside the default 7-day window. Same scheduled visit, but the
+    // component is NOT required here (standard sizes, the measure doesn't gate the order).
+    // The visit is still open and still holds the ◆ on the board: "required" answers
+    // whether it blocks the purchase, never whether anyone went to site.
     mk({
       wpId: 'wp-n-comp', description: 'Urinal privacy screens, wall-hung, 24"', qty: 6, um: 'ea',
       vendor: 'Harlow Partition Co.', lead: 5, onsite: buyBy(5, 4), submittal: 'Approved',
+      fieldDate: day(-5),
     }, true),
     // Planned — comfortably ahead, nothing to do yet.
     mk({
       wpId: 'wp-n-comp', description: 'Headrail-braced pilasters, floor-anchored', qty: 8, um: 'ea',
       vendor: 'Thornbury Metalcraft', lead: 5, onsite: buyBy(5, 74), submittal: 'Approved',
+      fieldDate: day(-5),
     }, true),
 
     /* ------------------------------------------------------- Northgate · 6.83 FRP */
@@ -221,15 +240,20 @@ export function buildDb(): Db {
     }, true),
 
     /* ------------------------------ Brookfield (supply only) · 10.26 Wall Protection */
+    // The healthy half of the field-measure story: a visit still ahead of us, so its ◆
+    // sits on its own date instead of pinned to today. Both rows carry it — one visit per
+    // package — and the draft row below already says what it's for.
     mk({
       wpId: 'wp-b-prot', description: 'Corner guards, stainless, 4′ — corridors', qty: 64, um: 'ea',
       vendor: 'Ironwood Wall Systems', lead: 4, onsite: buyBy(4, 21), submittal: 'Approved',
+      fieldDate: day(9),
     }, true),
     // Unpublished draft: edited but never saved to the report, so the package shows the
     // "unpublished changes" state and Overview still reports the old snapshot.
     mk({
       wpId: 'wp-b-prot', description: 'Crash rails, vinyl on aluminium retainer', qty: 210, um: 'lf',
       vendor: 'Ironwood Wall Systems', lead: 4, onsite: buyBy(4, 12), submittal: 'Pending',
+      fieldDate: day(9),
       notes: 'Quantity still being verified against the field measure.',
     }, false),
   ];

@@ -15,6 +15,11 @@
   /* Legacy alias — band styles referenced the old corporate navy; keep them on-palette.
    * (PrintReport keeps its own hex navy: the PDF mimics the client's Excel template.) */
   --brand-navy: var(--brand-dark);
+  /* The Material List band. Comes from --brand-dark in light mode, but gets its own token
+   * because it CANNOT follow it in dark: #312051 on the #1b2233 canvas measures 1.1:1 and
+   * the band disappears against the page. Re-declared further below, lighter. --brand-dark
+   * stays the brand purple elsewhere (timeline tooltip, titles) and doesn't move with it. */
+  --band-bg: var(--brand-dark);
 
   /* ---- Ink / text ---- */
   --ink: #181d26;
@@ -49,6 +54,12 @@
   /* ---- Semantic ---- */
   --link: #1b61c9;
   --link-active: #1a3866;
+  /* The same blue doing the OTHER job: a fill with white text on top (Button's `legal`
+   * variant), not text on the canvas. It needs its own token because --link is
+   * re-declared for dark mode — and the lighter value that makes link TEXT legible there
+   * would drop white-on-blue to 2.9:1. Identical hex in light mode, where the two jobs
+   * happen to want the same color; they part ways below. */
+  --link-fill: #1b61c9;
   --info: #254fad;
   --info-border: #458fff;
   --success: #006400;
@@ -84,6 +95,36 @@
   --status-na: #d3dae6;
   --status-na-ink: #46536a;
 
+  /* ---- Aging bands (Supply Only delivery status) — how long the material has been
+   * sitting received. A DIFFERENT question from the semaphore next to it, so a different
+   * family: desaturated siblings of order-soon/order-now, one step quieter, so a
+   * 20-day-old crate never shouts as loud as a real ORDER NOW. Theme-flat like the rest
+   * of the status pastels (pastel + own ink), so no dark-mode re-declaration. */
+  --wait-warn: #ecdcb6;
+  --wait-warn-ink: #6f5314;
+  --wait-late: #ecc6bf;
+  --wait-late-ink: #7d2e1f;
+
+  /* ---- Installation progress mosaic — SIX IDENTITY HUES, not a scale. Colour here says
+   * *which project*, never *how it's doing*: status is carried by the bars and the
+   * numbers, so a card keeps its hue while its percentage moves (the slot comes from
+   * `stableSlot(projectId)`, not from render order). Each hue is a trio — solid for the
+   * closed segment, soft for the pending one, ink for text on the soft. Theme-flat like
+   * the semaphore pastels, so no dark-mode re-declaration: the soft tone reads on either
+   * canvas and the solid always sits next to it. */
+  --mos-blue: #2a78d6;    --mos-blue-soft: #b5d4f4;    --mos-blue-ink: #0c447c;
+  --mos-orange: #eb6834;  --mos-orange-soft: #f5c4b3;  --mos-orange-ink: #8a3418;
+  --mos-violet: #7f77dd;  --mos-violet-soft: #cecbf6;  --mos-violet-ink: #3c3489;
+  --mos-magenta: #e87ba4; --mos-magenta-soft: #f4c0d1; --mos-magenta-ink: #8a2c4b;
+  --mos-aqua: #1baf7a;    --mos-aqua-soft: #9fe1cb;    --mos-aqua-ink: #0c5c48;
+  --mos-gray: #5f5e5a;    --mos-gray-soft: #d3d1c7;    --mos-gray-ink: #2c2c2a;
+  /* The two package flags that carry a verdict (✓ complete / ⚠ not started). Unlike the
+   * hues above these are TEXT on the card surface, which flips with the theme — so they
+   * are the one pair here that needs a dark-mode value (see below). 🚚 awaiting delivery
+   * uses --muted on purpose: not a verdict, just an explanation. */
+  --mos-flag-done: #0f6e56;
+  --mos-flag-stalled: #a32d2d;
+
   --input-highlight: #fff3b0;
 
   /* ---- Highlighter row flags (Material List) — fluorescent marker tones ---- */
@@ -91,11 +132,44 @@
   --hl-green: #b6ff5c;
   --hl-pink: #ff8ce0;
 
+  /* ---- What's drawn ON TOP of the --brand-dark band (lote 67) — a rule and a label
+   * ink. They exist because every spot that needed a line over the band was inventing its
+   * own rgba(255,255,255,x), and usually borrowing a BUTTON's border to do it: a divider
+   * between groups drawn that way competes with the controls it separates.
+   * Neither is re-declared in dark — the band is deep purple in both themes, so a
+   * translucent white is always the right value. */
+  --band-rule: rgba(255, 255, 255, 0.18);
+  --band-label: rgba(255, 255, 255, 0.64);
+
   /* ---- Work-package title bar — ONE tone for every package (brand-slate tint).
    * Replaces the per-package pastel colors; the yellow/green save-dot stays legible. */
   --wp-bar: #e6edf4;
   --wp-bar-border: #c5d3df;
   --wp-dirty-ink: #8a5210;
+
+  /* ---- Tinta de alarma SOBRE SUPERFICIE NEUTRA (lote 62) — no sobre el pastel del
+   * semáforo. `--status-order-now-ink` es un rojo casi negro pensado para leerse ENCIMA de
+   * su propio pastel rosa, que no cambia entre temas; puesto sobre `--canvas` en dark queda
+   * casi ilegible. REGLA: alarma sobre pastel del semáforo → tinta del semáforo. Alarma
+   * sobre canvas o superficie neutra → estos dos. */
+  --alert-ink: #8f1d1d;
+  --warn-ink: #8a5210;
+
+  /* Rojo pastel de alarma SOBRE UN PANEL OSCURO FIJO (lote 72) — la tercera superficie,
+   * y la razón por la que no le sirve ninguno de los dos de arriba.
+   *
+   * Los paneles flotantes del timeline (el tooltip del hito y su picker de paquete) van
+   * sobre `--brand-dark`, que a diferencia de `--canvas` **no se redeclara en oscuro**:
+   * es el mismo #312051 en los dos temas. Así que la alarma que va encima tampoco puede
+   * redeclararse — un token con valor de dark se despegaría de un fondo que nunca se
+   * mueve, que es justo el bug al revés del que motivó `--alert-ink`. Por eso ESTE token
+   * es theme-flat A PROPÓSITO y no lleva override en el bloque dark de abajo.
+   *
+   * El valor no es nuevo: es el que el tooltip ya venía hardcodeando a mano para sus dos
+   * líneas de alarma (⏰ vencido, ⚠ ORDER NOW). Mide 7.1:1 sobre #312051.
+   * REGLA, completando la de arriba: alarma sobre pastel del semáforo → tinta del
+   * semáforo · sobre canvas → --alert-ink · sobre panel oscuro fijo → este. */
+  --alert-on-dark: #ff9b9b;
 }
 
 /* ======================================================================
@@ -114,12 +188,35 @@
   --border-strong: #56617a;
   --brand-mint: #0f1520;
   --title: #d8ccff;
+  /* The band, lighter than the brand purple: 1.8:1 against --canvas (vs 1.1:1 for #312051,
+   * which made it invisible) and 8.7:1 with the white title on top of it. */
+  --band-bg: #543f80;
   --input-highlight: #4d4620;
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.4);
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.55);
   --wp-bar: #26314a;
   --wp-bar-border: #3a4a6b;
   --wp-dirty-ink: #f4c163;
+
+  /* Mosaic flags — the two that are ink on the card, so they follow the canvas. The six
+   * hues above do not: they paint bars, and a bar keeps its identity in both themes. */
+  --mos-flag-done: #6fd7b4;
+  --mos-flag-stalled: #ff9b9b;
+
+  /* Link blue is TEXT on --canvas, so it travels with the neutrals, not with the status
+   * pastels: #1b61c9 measures 2.7:1 on #1b2233 — under AA (4.5:1) and under even the 3:1
+   * large-text floor. Same hue (~216 deg), lifted until it clears AA with room to spare.
+   * The hover has to INVERT here. On white, --link-active works by getting darker; on the
+   * dark canvas that same #1a3866 measured 1.4:1. Brightening is what "active" means here.
+   * --link-fill deliberately does NOT follow: see its note in the light block. */
+  --link: #6399ee;        /* 5.5:1 on --canvas */
+  --link-active: #89b4f5; /* 7.5:1 on --canvas */
+
+  /* El par de alarma sobre neutro, invertido: los tonos claros que ya se venían usando a
+   * mano para esto (el rojo del tooltip del timeline, el ámbar del paquete sucio). Acá
+   * suben a token para que el riel de indicadores no los vuelva a escribir a mano. */
+  --alert-ink: #ff9b9b;
+  --warn-ink: #f4c163;
 }
 
 /* Highlighted rows (Material List) keep their light-mode look in dark mode: the
@@ -130,6 +227,8 @@
   --ink: #181d26;
   --body: #333840;
   --muted: #41454d;
+  --link: #1b61c9;
+  --link-active: #1a3866;
   --canvas: #ffffff;
   --surface-soft: #f8fafc;
   --surface-strong: #e0e2e6;

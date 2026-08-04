@@ -5,7 +5,7 @@
 // Delivery. Edits apply live (like the grid cells).
 import { useState } from 'react';
 import { useApp } from '../store/useApp';
-import { submittalBlockers, SUBMITTALS, SUB_STATUSES, SUB_STATUS_LABEL } from '../store/logic';
+import { fmtMDY, submittalBlockers, SUBMITTALS, SUB_STATUSES, SUB_STATUS_LABEL } from '../store/logic';
 import type { MaterialItem, SubmittalCompStatus } from '../store/types';
 import { Modal } from './ds/Modal';
 import { Button } from './ds/Button';
@@ -41,10 +41,17 @@ function StatusPicker({ value, onChange }: { value: SubmittalCompStatus; onChang
   );
 }
 
-function CompRow({ title, hint, req, status, onToggle, onStatus, children }: {
+function CompRow({ title, hint, req, status, onToggle, onStatus, children, note, statusWhenOff }: {
   title: string; hint: string; req: boolean; status: SubmittalCompStatus;
   onToggle: (v: boolean) => void; onStatus: (s: SubmittalCompStatus) => void; children?: React.ReactNode;
+  /** Line above the picker — the scheduled field-measure visit, when there is one. */
+  note?: React.ReactNode;
+  /** Show the status picker even with Required off. Requiring a component is about
+   * blocking the ORDER; the field-measure status also answers "did we go?", and that
+   * question has to stay answerable whether or not it blocks anything. */
+  statusWhenOff?: boolean;
 }) {
+  const open = req || statusWhenOff;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 14px', border: '1px solid var(--hairline)', borderRadius: 'var(--radius-md)', background: req ? 'var(--canvas)' : 'var(--surface-soft)' }}>
       <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
@@ -52,12 +59,30 @@ function CompRow({ title, hint, req, status, onToggle, onStatus, children }: {
         <span style={{ font: 'var(--text-body)', fontWeight: 600, color: 'var(--ink)' }}>{title}</span>
         <span style={{ font: 'var(--text-caption)', color: 'var(--muted)' }}>{hint}</span>
       </label>
-      {req && (
+      {open && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 30 }}>
-          {children}
+          {note}
+          {req && children}
           <StatusPicker value={status} onChange={onStatus} />
         </div>
       )}
+    </div>
+  );
+}
+
+/** The scheduled visit, inside the Field measurements row — the date lives on the item
+ * (`fieldDate`, set from the toolbar ◆) but the only thing that says it HAPPENED is this
+ * row's status, so the two have to be readable together. */
+function FieldVisitNote({ date, status }: { date: string; status: SubmittalCompStatus }) {
+  return (
+    <div style={{ font: 'var(--text-caption)', color: 'var(--muted)', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+      <span aria-hidden style={{ width: 9, height: 9, marginTop: 4, background: 'var(--brand-orange)', borderRadius: 2, transform: 'rotate(45deg)', display: 'inline-block', flexShrink: 0 }} />
+      <span>
+        Field measure visit scheduled <b style={{ color: 'var(--ink)' }}>{fmtMDY(date)}</b> —{' '}
+        {status === 'approved'
+          ? <>measurements confirmed taken, so its ◆ is off the Overview timeline. Back to Pending puts it there.</>
+          : <>its ◆ stays on the Overview timeline (pinned to today once that date passes) until this reads <b style={{ color: 'var(--ink)' }}>Approved</b>.</>}
+      </span>
     </div>
   );
 }
@@ -98,10 +123,17 @@ export function BreakdownSubmittalsModal({ item, onClose }: { item: MaterialItem
           req={item.shopReq} status={item.shopStatus}
           onToggle={(v) => set({ shopReq: v })} onStatus={(s) => set({ shopStatus: s })}
         />
+        {/* The only row with a date of its own: `fieldDate` is set from the toolbar ◆ and
+            this status is what confirms the visit happened. So when a visit is scheduled
+            the picker shows even with Required off — otherwise the ◆ would be anchored to
+            the timeline with its only release hidden behind a checkbox that means
+            something else entirely. */}
         <CompRow
           title="Field measurements" hint="site verification before fabrication"
           req={item.fieldReq} status={item.fieldStatus}
           onToggle={(v) => set({ fieldReq: v })} onStatus={(s) => set({ fieldStatus: s })}
+          statusWhenOff={!!item.fieldDate}
+          note={item.fieldDate ? <FieldVisitNote date={item.fieldDate} status={item.fieldStatus} /> : undefined}
         />
         <CompRow
           title="Other" hint="anything else blocking the order"

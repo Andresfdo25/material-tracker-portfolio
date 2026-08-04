@@ -1,13 +1,14 @@
-/* timeline.css — los estados que la línea de tiempo del Overview no podía declarar por
- * inline style (hover de carril, foco de teclado, latido del hito en rojo).
+/* timeline.css — the states the Overview timeline can't declare from an inline style:
+ * lane hover, keyboard focus, and the pulse on a milestone that needs attention now.
  *
- * Nota de convivencia: el `transform` y el `box-shadow` del punto SÍ se escriben inline
- * (llevan el rotate del ◆ y el anillo de estado), así que su escala en hover se calcula
- * en React con el `hover` que el componente ya tenía. Acá quedan solo las propiedades
- * que ningún inline style toca — `filter` y `background` del carril. */
+ * How it coexists with the inline styles: a dot's `transform` and `box-shadow` ARE written
+ * inline (they carry the ◆'s rotation and the status ring), so its hover scale is computed
+ * in React from the `hover` state the component already tracked. What's left here is only
+ * the properties no inline style touches — `filter`, and the lane's `background`.
+ */
 
-/* Carril de proyecto: pasar el mouse por la fila la separa de sus vecinas, que es lo que
- * permite seguir una fila larga hasta su punto sin perder el renglón. */
+/* Project lane: hovering the row lifts it away from its neighbours, which is what lets you
+ * follow a long lane out to its dot without losing the line you were on. */
 .tl-lane {
   border-radius: var(--radius-sm);
   transition: background 120ms ease;
@@ -16,7 +17,7 @@
   background: color-mix(in srgb, var(--brand-slate) 8%, transparent);
 }
 
-/* Nombre del proyecto — es un botón (abre el proyecto), así que se comporta como tal. */
+/* The project name is a button (it opens the project), so it behaves like one. */
 .tl-lane-label {
   transition: color 120ms ease;
 }
@@ -30,16 +31,16 @@
   border-radius: var(--radius-sm);
 }
 
-/* El punto. El foco de teclado usa `outline`, que tampoco viaja por inline style. */
+/* The dot. Keyboard focus uses `outline`, which doesn't travel by inline style either. */
 .tl-dot:focus-visible {
   outline: 2px solid var(--info-border);
   outline-offset: 3px;
 }
 
-/* Paquete con material pasado de su Buy-By: late un par de veces por minuto. El anillo
- * rojo ya lo dice en estático; esto es lo que hace que el ojo lo encuentre primero en un
- * portafolio de ocho carriles. Se anima `filter` porque `box-shadow` está ocupado por el
- * anillo de estado. */
+/* A package holding material past its buy-by date: it breathes a couple of times a minute.
+ * The red ring already says so statically; this is what makes the eye find it first across
+ * eight lanes. `filter` is the animated property because `box-shadow` is already spoken for
+ * by the status ring. */
 @keyframes tlPulse {
   0%,
   100% {
@@ -53,8 +54,27 @@
   animation: tlPulse 2.4s ease-in-out infinite;
 }
 
+/* A field-measure visit whose date has passed with nobody confirming it. It breathes like
+ * the red milestone but in its own orange: the ◆ stays pinned to the TODAY line until
+ * someone says the measurements were taken, and pinned-but-silent is exactly how a site
+ * visit gets forgotten. Same trick as above — `filter` is animated because the status ring
+ * owns `box-shadow` from the inline style. */
+@keyframes tlPulseFm {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(255, 143, 0, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 5px rgba(255, 143, 0, 0.95));
+  }
+}
+.tl-dot--fm-alert {
+  animation: tlPulseFm 2.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .tl-dot--alert {
+  .tl-dot--alert,
+  .tl-dot--fm-alert {
     animation: none;
   }
   .tl-lane {
