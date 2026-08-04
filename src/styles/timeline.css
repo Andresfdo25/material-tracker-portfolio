@@ -37,6 +37,27 @@
   outline-offset: 3px;
 }
 
+/* The install bar (or tick) in the row under the lane — same treatment as the dot: it's
+ * a button, so keyboard focus shows. */
+.tl-install-bar:focus-visible {
+  outline: 2px solid var(--info-border);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* The bar is draggable (§7.7): the body moves the whole window, the edge handles move
+ * one bound. The cursor lives in the stylesheet — an inline style would always win, and
+ * the drag's `grabbing` is a state. */
+.tl-install-bar {
+  cursor: grab;
+}
+.tl-install-bar:active {
+  cursor: grabbing;
+}
+.tl-install-handle {
+  cursor: ew-resize;
+}
+
 /* A package holding material past its buy-by date: it breathes a couple of times a minute.
  * The red ring already says so statically; this is what makes the eye find it first across
  * eight lanes. `filter` is the animated property because `box-shadow` is already spoken for

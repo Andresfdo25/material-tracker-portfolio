@@ -3,7 +3,7 @@
 // by project → work package with item counts. All read published report snapshots.
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useApp } from '../store/useApp';
-import { awaitingInstall, backorderQty, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, distinctWindowCount, fieldMeasurePending, fmtLong, fmtMD, fmtMDY, groupByPackage, hasOpenBackorder, installUrgency, installWindow, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, packageReadiness, parseISO, pendingInstallQty, projectClosesAtSite, readinessMark, readinessRank, stageMoves, submittalBlockers, today, totalQty, waitSeverity, type InstallUrgency, type MosaicBadgeKey, type MosaicCard, type PkgReadiness, type StageMoves, type WaitSeverity } from '../store/logic';
+import { addDays, awaitingInstall, backorderQty, closesAtSite, computeItem, daysLate, daysWaiting, deliveryWatch, diffDays, distinctWindowCount, fieldMeasurePending, fmtLong, fmtMD, fmtMDY, groupByPackage, groupInstallBars, hasOpenBackorder, installBarGeometry, installConflict, installDateOf, installUrgency, installWindow, installWindowSummary, isClosed, itemStage, logDrivesStage, MOSAIC_BADGE_META, mosaicCards, packagePhase, packageReadiness, parseISO, pendingInstallQty, prefixCompare, projectClosesAtSite, readinessMark, readinessRank, stageMoves, submittalBlockers, today, toISO, totalQty, waitSeverity, type InstallBarGroup, type InstallUrgency, type InstallWindow, type MosaicBadgeKey, type MosaicCard, type PackagePhase, type PkgReadiness, type StageMoves, type WaitSeverity } from '../store/logic';
 import type { ComputedItem, ItemStage, ItemStatus, MaterialItem, Project, ReportSnapshot, WorkPackage } from '../store/types';
 import { StatusBadge } from '../components/ds/StatusBadge';
 import { Button } from '../components/ds/Button';
@@ -15,6 +15,9 @@ import { PackageCloseOutModal, type PackageItemRow } from '../components/Package
 import type { MoveTarget } from '../components/StageMoveButtons';
 import { ItemQuickEditModal, type QuickEditPatch, type QuickEditRow, type QuickEditVariant } from '../components/ItemQuickEditModal';
 import { ConfirmDateModal, type DatePrompt } from '../components/ConfirmDateModal';
+import { loadInstallBarTone, saveInstallBarTone, installBarToneOf, type InstallBarTone } from '../components/installBarTone';
+import { InstallBarPopover } from '../components/InstallBarPopover';
+import { localRect } from '../components/uiScale';
 import { card, td, tdL, th, thL } from '../components/ds/overviewTable';
 
 export interface Enriched {
@@ -641,6 +644,30 @@ interface Milestone {
 interface Lane {
   project: Project;
   milestones: Milestone[];
+  /** One bar per SHARED install window (lote 76): packages with the exact same
+   * aggregate window collapse into a single bar — see groupInstallBars. Each renders
+   * in a slim install row DIRECTLY BENEATH its own lane (lote 74, PM's final call). */
+  installBars: InstallBarGroup<InstallBar>[];
+}
+/** One package's planned install window as a MEMBER of a bar on its lane's install row
+ * (lote 76 — before grouping it WAS the bar). Only 'installing' / 'install-planned'
+ * packages get one — closed and unscheduled ('procurement') draw nothing, and
+ * supply-only packages have no installation phase at all (§4.5). */
+interface InstallBar {
+  wpId: string;
+  label: string;
+  prefix: string;
+  itemId: string;            // open-package target, same idea as the wp milestone dot
+  window: InstallWindow;     // the aggregate { start, end, mixed }
+  phase: PackagePhase;
+  conflict: boolean;         // installing on material not on site (installConflict)
+  readiness: PkgReadiness;
+  /** The package's full roster — exactly the set the bar was derived from, and the set a
+   * drag writes (§7.7). */
+  itemIds: string[];
+  /** How many roster items have material on site left to install (pendingInstallQty > 0)
+   * — the popover's per-package count (lote 75). */
+  installable: number;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -648,12 +675,16 @@ const LANE_LABEL_W = 156;
 const TL_INSET = 10;
 const HEADER_H = 24; // month strip ABOVE the lanes (a Gantt reads its scale at the top)
 const LANE_H = 40;
+const INSTALL_ROW_H = 26; // the slim install row under each lane that has bars
 const TL_RED = '#d84343'; // today / ORDER NOW — the one hue that isn't a brand token
 
 /* The legend lives in the section header next to the title, not inside the card: the
    dots mean the same thing whether or not there are lanes, and up there they read as a
    key to the chart instead of as a first row of content. */
-function TimelineLegend() {
+function TimelineLegend({ showInstall = false, installInk = 'var(--ib-teal-ink)' }: {
+  showInstall?: boolean;
+  installInk?: string;
+}) {
   const item = { display: 'inline-flex', alignItems: 'center', gap: 6 } as const;
   return (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', font: 'var(--text-caption)', color: 'var(--muted)' }}>
@@ -663,6 +694,9 @@ function TimelineLegend() {
       <span style={item} title="The package's Req. date has passed, or it still has items past their buy-by date"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: `0 0 0 2px ${TL_RED}` }} /> Past due / ORDER NOW</span>
       <span style={item} title="Every item in the package is closed out"><span style={{ width: 13, height: 13, borderRadius: '50%', background: 'var(--brand-slate)', border: '2px solid var(--canvas)', boxShadow: '0 0 0 2px var(--success-border)' }} /> Closed out</span>
       <span style={item} title="The stretch between a project's first and last milestone — how long its material keeps landing"><span style={{ width: 22, height: 7, borderRadius: 4, background: 'color-mix(in srgb, var(--brand-slate) 28%, transparent)' }} /> Delivery window</span>
+      {showInstall && (
+        <span style={item} title="A package's planned installation window, in a slim row under its project lane. Outline = scheduled, solid = in progress (its left edge pins to today; a window that runs out holds a 1-day bar at today until the package closes), red = installing on material not on site. Click a bar for its options — colour, open the package, mark installed; drag it (or an edge) to reschedule."><span style={{ width: 22, height: 8, borderRadius: 4, border: `2px solid ${installInk}`, background: 'transparent' }} /> Install window</span>
+      )}
     </div>
   );
 }
@@ -686,15 +720,104 @@ function ReadinessTick({ readiness, supplyOnly, tick = true, word = true }: {
   );
 }
 
-function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfirmFm }: {
+function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfirmFm, barToneOf, onPickTone, onInstallPackage, onMoveWindow }: {
   lanes: Lane[];
   onJumpItem: (projectId: string, itemId: string) => void;
   onJumpProject: (projectId: string) => void;
   onSetDate: (projectId: string, wpId: string | undefined, iso: string, field: 'onsite' | 'fieldDate', wpIds?: string[]) => void;
   /** Click on a ◆ — "we measured": marks the package's Field measurements Approved. */
   onConfirmFm: (wpId: string, wpLabel: string, date: string) => void;
+  /** The user-chosen install-bar colour, PER PROJECT (a UI pref — see installBarTone.ts).
+   * The alarm tone overrides it wherever they meet. */
+  barToneOf: (projectId: string) => InstallBarTone;
+  /** The per-project colour pick from the bar's popover (lote 75). */
+  onPickTone: (projectId: string, key: string) => void;
+  /** The popover's "Mark installed" — the screen confirms and writes (lote 75/76).
+   * Takes the SELECTED member packages (checkboxes), one or several. */
+  onInstallPackage: (wpIds: string[]) => void;
+  /** §7.7 — a dropped bar drag. The screen confirms, writes and publishes EVERY member
+   * package (lote 76: a bar can speak for several). `itemIds` is the union roster the
+   * bar was derived from; `anyMixed` drives the collapse warning in the confirm. */
+  onMoveWindow: (label: string, next: { start: string; end: string }, itemIds: string[], wpIds: string[], anyMixed: boolean) => void;
 }) {
   const [hover, setHover] = useState<{ laneIdx: number; msIdx: number } | null>(null);
+  // The install rows' hover, keyed by wpId (unique across lanes) — the milestone
+  // hover above keys on indexes because a lane can hold several dots; a lane's row holds
+  // at most one bar per package.
+  const [barHover, setBarHover] = useState<string | null>(null);
+  // The bar's click popover (lote 75): which bar + where its button was at click time
+  // (localRect — local px, the popover is position:fixed against the zoomed body).
+  // Keyed by GROUP key since lote 76 (one bar per shared window).
+  const [barPopover, setBarPopover] = useState<{ key: string; anchor: ReturnType<typeof localRect> } | null>(null);
+  /* The install-bar drag (§7.7), same pointer-capture idiom as the milestone dots. The
+   * REF carries the gesture — mode, origin rect, and the last preview — so the drop
+   * confirm never reads stale state; the STATE is only what the render needs (the bar's
+   * preview position and the guide/pill anchor). Three gestures: left edge moves the
+   * start, right edge moves the end, the body moves the whole window keeping its
+   * duration. An edge never passes the other bound — the same invariant
+   * InstallWindowFields enforces (end < start is not a state the model accepts).
+   * Lote 76: the bar is a GROUP — the gesture is keyed by the group key and the drop
+   * writes every member (see onMoveWindow). */
+  const barDragRef = useRef<{
+    key: string; mode: 'start' | 'end' | 'body'; rect: DOMRect; startX: number; moved: boolean;
+    start: string; end: string; prevStart: string; prevEnd: string; focusIso: string;
+  } | null>(null);
+  const [barDrag, setBarDrag] = useState<{ key: string; prevStart: string; prevEnd: string; focusIso: string } | null>(null);
+  /** What a grouped bar calls itself (lote 76): the member's label when alone,
+   * "N packages" when it speaks for several. */
+  const groupLabel = (bar: InstallBarGroup<InstallBar>) =>
+    bar.members.length > 1 ? `${bar.members.length} packages` : bar.members[0].label;
+  const onBarPointerDown = (bar: InstallBarGroup<InstallBar>, mode: 'start' | 'end' | 'body') => (e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    const plot = (e.currentTarget as HTMLElement).closest('[data-install-plot]') as HTMLElement | null;
+    if (!plot) return;
+    const win = bar.members[0].window;
+    barDragRef.current = {
+      key: bar.key, mode, rect: plot.getBoundingClientRect(), startX: e.clientX, moved: false,
+      start: win.start, end: win.end,
+      prevStart: win.start, prevEnd: win.end,
+      focusIso: win.start || win.end,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onBarPointerMove = (key: string) => (e: React.PointerEvent<HTMLElement>) => {
+    const d = barDragRef.current;
+    if (!d || d.key !== key) return;
+    // Click vs drag: the same 3px threshold the milestone dots use. Below it the pointer
+    // up is a click (the bar's popover); above it, a reschedule.
+    if (Math.abs(e.clientX - d.startX) > 3) d.moved = true;
+    if (!d.moved) return;
+    const iso = dateAtX(e.clientX, d.rect);
+    if (d.mode === 'start') {
+      d.prevStart = d.end && iso > d.end ? d.end : iso;
+      d.focusIso = d.prevStart;
+    } else if (d.mode === 'end') {
+      d.prevEnd = d.start && iso < d.start ? d.start : iso;
+      d.focusIso = d.prevEnd;
+    } else {
+      const delta = diffDays(iso, dateAtX(d.startX, d.rect));
+      const shift = (s: string) => (s ? toISO(addDays(parseISO(s), delta)) : '');
+      d.prevStart = shift(d.start);
+      d.prevEnd = shift(d.end);
+      d.focusIso = iso;
+    }
+    setBarDrag({ key: d.key, prevStart: d.prevStart, prevEnd: d.prevEnd, focusIso: d.focusIso });
+  };
+  const onBarPointerUp = (bar: InstallBarGroup<InstallBar>, mode: 'start' | 'end' | 'body') => (e: React.PointerEvent<HTMLElement>) => {
+    const d = barDragRef.current;
+    barDragRef.current = null;
+    setBarDrag(null);
+    if (!d) return;
+    // A drag that lands where it started is a no-op — no confirm, no publish, no undo
+    // entry for a write that changes nothing.
+    if (d.moved && (d.prevStart !== d.start || d.prevEnd !== d.end)) {
+      onMoveWindow(groupLabel(bar), { start: d.prevStart, end: d.prevEnd }, bar.itemIds, bar.members.map((m) => m.wpId), bar.mixed);
+    } else if (!d.moved && mode === 'body') {
+      // Click = the bar's options popover (lote 75): colour per project, open a
+      // package, mark installed. The anchor is the button's rect NOW, in local px.
+      setBarPopover({ key: bar.key, anchor: localRect(e.currentTarget as HTMLElement) });
+    }
+  };
   const [drag, setDrag] = useState<{ laneIdx: number; msIdx: number; date: string } | null>(null);
   const dragRef = useRef<{ laneIdx: number; msIdx: number; rect: DOMRect; startX: number; moved: boolean } | null>(null);
   // Which package did you mean? A collapsed "all" dot speaks for several packages, so its
@@ -853,7 +976,8 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfir
           const wFrom = Math.min(...fs);
           const wTo = Math.max(...fs);
           return (
-            <div key={lane.project.id} className="tl-lane" style={{ display: 'flex', alignItems: 'center', height: LANE_H, position: 'relative', zIndex: 1 }}>
+            <Fragment key={lane.project.id}>
+            <div className="tl-lane" style={{ display: 'flex', alignItems: 'center', height: LANE_H, position: 'relative', zIndex: 1 }}>
               <button
                 type="button"
                 className="tl-lane-label"
@@ -1165,8 +1289,238 @@ function ReqDateTimeline({ lanes, onJumpItem, onJumpProject, onSetDate, onConfir
                 )}
               </div>
             </div>
+            {/* Install row — DIRECTLY BENEATH its own lane (lote 74, decisión del PM que
+                reemplaza el sub-track bajo el eje): la ventana planeada de cada paquete se
+                lee pegada a su proyecto. Sin ventanas no hay fila — ni un nodo extra. El
+                gutter de la izquierda es la misma columna de rótulo del carril (la
+                identidad la da el rótulo de arriba), así el plot comparte coordenadas. */}
+            {lane.installBars.length > 0 && (
+              <div className="tl-lane" style={{ display: 'flex', alignItems: 'center', height: INSTALL_ROW_H, position: 'relative', zIndex: 1 }}>
+                <span style={{ width: LANE_LABEL_W, flexShrink: 0 }} />
+                <div data-install-plot style={{ position: 'relative', flex: 1, height: '100%' }}>
+                  {lane.installBars.map((bar) => {
+                    // During a drag the bar draws at its PREVIEW position — cheap because
+                    // the geometry is already derived from dates.
+                    const dragging = barDrag?.key === bar.key;
+                    const win = dragging ? { start: barDrag.prevStart, end: barDrag.prevEnd } : bar.members[0].window;
+                    const geom = installBarGeometry(win, todayISO);
+                    // The alarm tone ALWAYS overrides the user-chosen bar colour: a
+                    // preference must never mute the alarm. Colour never travels alone:
+                    // the tooltip and the title both print the state word. The colour is
+                    // PER PROJECT (lote 75).
+                    const tone = barToneOf(lane.project.id);
+                    // Overdue no longer paints the bar (lote 75): a window that ran out
+                    // holds a 1-day bar pinned at today, and THAT is the "still not
+                    // installed" signal — Alerts and the closing clock keep the red. The
+                    // bar's alarm is the conflict's alone now, and it STILL overrides the
+                    // chosen colour: a preference must never mute it.
+                    const alarm = bar.conflict;
+                    const ink = alarm ? 'var(--alert-ink)' : tone.ink;
+                    // The group's phase is any member's (lote 76): they share the window,
+                    // so they share started-ness.
+                    const phase = bar.members[0].phase;
+                    // Planned = a whisper of the pastel under the ink outline (a bare
+                    // outline in the ink alone drops to ~1.8:1 on the dark canvas);
+                    // installing = the solid pastel — filled vs outline is the state.
+                    const fill = alarm ? 'color-mix(in srgb, var(--alert-ink) 16%, transparent)'
+                      : phase === 'installing' ? tone.fill
+                        : `color-mix(in srgb, ${tone.fill} 18%, transparent)`;
+                    const summary = installWindowSummary(bar.members[0].window.start, bar.members[0].window.end);
+                    const stateWord = bar.conflict ? 'Installing on material not on site'
+                      : phase === 'installing' ? 'Installing' : 'Install planned';
+                    const caption = `${groupLabel(bar)} — ${summary}${bar.mixed ? ' (items have different windows)' : ''} · ${stateWord}`;
+                    const f = frac(geom.leftIso);
+                    const isHover = barHover === bar.key && !barDrag;
+                    const anchor = f > 0.78 ? 88 : f < 0.22 ? 12 : 50;
+                    const raised = dragging ? 6 : isHover ? 5 : 2;
+                    return (
+                      <Fragment key={bar.key}>
+                        {geom.single ? (
+                          // One bound only → a marker, not a bar: a thick tick with a
+                          // 24px hit target, never a hairline. The drag moves that bound.
+                          <button
+                            type="button"
+                            className="tl-install-bar"
+                            title={`${caption} · drag to reschedule · click for options`}
+                            aria-label={`${lane.project.name} — ${caption}`}
+                            onPointerDown={onBarPointerDown(bar, bar.members[0].window.end ? 'end' : 'start')}
+                            onPointerMove={onBarPointerMove(bar.key)}
+                            onPointerUp={onBarPointerUp(bar, 'body')}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                setBarPopover({ key: bar.key, anchor: localRect(e.currentTarget as HTMLElement) });
+                              }
+                            }}
+                            onMouseEnter={() => setBarHover(bar.key)}
+                            onMouseLeave={() => setBarHover(null)}
+                            style={{
+                              position: 'absolute', left: leftOf(f), top: '50%', transform: 'translate(-50%, -50%)',
+                              width: 24, height: 24, padding: 0, border: 'none', background: 'transparent',
+                              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                              touchAction: 'none', zIndex: raised,
+                            }}
+                          >
+                            <span aria-hidden style={{ width: 7, height: 16, borderRadius: 2, boxSizing: 'border-box', background: fill, border: `2px solid ${ink}` }} />
+                          </button>
+                        ) : (
+                          // The wrapper carries the hit area (taller than the 12px bar);
+                          // the two edge handles sit over its ends, 10px each.
+                          <span
+                            style={{
+                              position: 'absolute', left: leftOf(f), right: rightOf(frac(geom.rightIso)), top: '50%', transform: 'translateY(-50%)',
+                              height: 20, minWidth: 14, zIndex: raised,
+                            }}
+                          >
+                            <button
+                              type="button"
+                              className="tl-install-bar"
+                              title={`${caption} · drag to reschedule · click for options`}
+                              aria-label={`${lane.project.name} — ${caption}`}
+                              onPointerDown={onBarPointerDown(bar, 'body')}
+                              onPointerMove={onBarPointerMove(bar.key)}
+                              onPointerUp={onBarPointerUp(bar, 'body')}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  setBarPopover({ key: bar.key, anchor: localRect(e.currentTarget as HTMLElement) });
+                                }
+                              }}
+                              onMouseEnter={() => setBarHover(bar.key)}
+                              onMouseLeave={() => setBarHover(null)}
+                              style={{
+                                position: 'absolute', left: 0, right: 0, top: '50%', transform: 'translateY(-50%)',
+                                height: 12, padding: 0, touchAction: 'none',
+                                background: fill, border: `2px solid ${ink}`, borderRadius: 6,
+                                boxShadow: isHover || dragging ? `0 0 0 4px color-mix(in srgb, ${ink} 22%, transparent)` : undefined,
+                                transition: 'box-shadow 110ms ease',
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="tl-install-handle"
+                              title="Drag to move the start date"
+                              aria-label={`${groupLabel(bar)} — drag to move the install start date`}
+                              onPointerDown={onBarPointerDown(bar, 'start')}
+                              onPointerMove={onBarPointerMove(bar.key)}
+                              onPointerUp={onBarPointerUp(bar, 'start')}
+                              style={{ position: 'absolute', left: -5, top: 0, bottom: 0, width: 10, padding: 0, border: 'none', background: 'transparent', touchAction: 'none' }}
+                            />
+                            <button
+                              type="button"
+                              className="tl-install-handle"
+                              title="Drag to move the end date"
+                              aria-label={`${groupLabel(bar)} — drag to move the install end date`}
+                              onPointerDown={onBarPointerDown(bar, 'end')}
+                              onPointerMove={onBarPointerMove(bar.key)}
+                              onPointerUp={onBarPointerUp(bar, 'end')}
+                              style={{ position: 'absolute', right: -5, top: 0, bottom: 0, width: 10, padding: 0, border: 'none', background: 'transparent', touchAction: 'none' }}
+                            />
+                          </span>
+                        )}
+                        {isHover && (
+                          <div data-timeline-tooltip style={{
+                            position: 'absolute', left: leftOf(f), bottom: 'calc(50% + 14px)', transform: `translateX(-${anchor}%)`,
+                            zIndex: 10, background: 'var(--brand-dark)', color: '#fff', borderRadius: 'var(--radius-sm)',
+                            padding: '8px 11px', font: 'var(--text-caption)', maxWidth: 280, boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
+                          }}>
+                            <div style={{ fontWeight: 700 }}>{lane.project.name}</div>
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap', margin: '2px 0 1px' }}>
+                              <span style={{ color: 'var(--brand-teal)' }}>{groupLabel(bar)}</span>
+                              <span style={{ color: 'rgba(255,255,255,0.85)', font: 'var(--text-mono-sm)', whiteSpace: 'nowrap' }}>{summary}</span>
+                            </div>
+                            {/* Anti-saturation (lote 72), applied to the group's members
+                                (lote 76): one collective ✓ when every member sits on the
+                                same tier; per-row words when they differ. A lone member
+                                renders exactly like the old single-package tooltip. */}
+                            {(() => {
+                              const collective = bar.members.every((m) => m.readiness === bar.members[0].readiness);
+                              return (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, font: 'var(--text-mono-sm)' }}>
+                                  <div style={{ display: 'flex', gap: 5 }}>
+                                    <ReadinessTick readiness={bar.members[0].readiness} supplyOnly={false} word={!collective || bar.members.length === 1} />
+                                    {collective && bar.members.length > 1 && <span style={{ color: 'rgba(255,255,255,0.5)' }}>· all {bar.members.length} packages</span>}
+                                    <span style={{ color: 'rgba(255,255,255,0.5)' }}>· {phase === 'installing' ? 'Installing' : 'Install planned'}</span>
+                                  </div>
+                                  {bar.members.length > 1 && bar.members.map((m) => (
+                                    <div key={m.wpId} style={{ display: 'flex', gap: 5 }}>
+                                      <span style={{ color: 'rgba(255,255,255,0.85)' }}>{m.label}</span>
+                                      {!collective && <ReadinessTick readiness={m.readiness} supplyOnly={false} />}
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            })()}
+                            {bar.mixed && (
+                              <div style={{ color: 'rgba(255,255,255,0.6)', font: 'var(--text-mono-sm)' }}>⚠ items have different windows</div>
+                            )}
+                            {alarm && (
+                              <div style={{ color: 'var(--alert-on-dark)', font: 'var(--text-mono-sm)' }}>
+                                ⚠ Installing on material not on site
+                              </div>
+                            )}
+                            <div style={{ color: 'rgba(255,255,255,0.55)', font: 'var(--text-mono-sm)', marginTop: 3 }}>↔ drag to reschedule · click for options</div>
+                            <span style={{
+                              position: 'absolute', top: '100%', left: `${anchor}%`, transform: 'translateX(-50%)',
+                              width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent',
+                              borderTop: '6px solid var(--brand-dark)',
+                            }} />
+                          </div>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                  {/* Drag guide + date pill, the milestone drag's exact idiom. */}
+                  {barDrag && lane.installBars.some((b) => b.key === barDrag.key) && (
+                    <>
+                      <div style={{ position: 'absolute', left: leftOf(frac(barDrag.focusIso)), top: 2, bottom: 2, width: 0, borderLeft: '2px dashed var(--brand-slate)', pointerEvents: 'none', zIndex: 7 }} />
+                      <div data-timeline-drag style={{
+                        position: 'absolute', left: leftOf(frac(barDrag.focusIso)), bottom: 'calc(50% + 14px)', transform: 'translateX(-50%)',
+                        zIndex: 11, background: 'var(--brand-slate)', color: '#fff', borderRadius: 'var(--radius-pill)',
+                        padding: '4px 11px', font: 'var(--text-mono-sm)', fontWeight: 700, whiteSpace: 'nowrap', boxShadow: 'var(--shadow-pop)', pointerEvents: 'none',
+                      }}>
+                        {fmtMDY(barDrag.focusIso)}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+            </Fragment>
           );
         })}
+        {/* The bar's click popover (lote 75, grouped in lote 76), portaled to <body> by
+            the component itself. One at a time, keyed by group key (unique per lane). */}
+        {barPopover && (() => {
+          const popLane = lanes.find((l) => l.installBars.some((b) => b.key === barPopover.key));
+          const popBar = popLane?.installBars.find((b) => b.key === barPopover.key);
+          if (!popLane || !popBar) return null;
+          const popState = popBar.conflict ? 'Installing on material not on site'
+            : popBar.members[0].phase === 'installing' ? 'Installing' : 'Install planned';
+          return (
+            <InstallBarPopover
+              anchor={barPopover.anchor}
+              toneKey={barToneOf(popLane.project.id).key}
+              header={{
+                projectName: popLane.project.name,
+                summary: installWindowSummary(popBar.members[0].window.start, popBar.members[0].window.end),
+                stateWord: popState, mixed: popBar.mixed,
+              }}
+              members={popBar.members.map((m) => ({
+                wpId: m.wpId, label: m.label, readiness: m.readiness,
+                installable: m.installable, itemCount: m.itemIds.length,
+              }))}
+              onPickTone={(key) => onPickTone(popLane.project.id, key)}
+              onOpenPackage={(wpId) => {
+                setBarPopover(null);
+                const m = popBar.members.find((x) => x.wpId === wpId);
+                if (m) onJumpItem(popLane.project.id, m.itemId);
+              }}
+              onMarkInstalled={(wpIds) => { setBarPopover(null); onInstallPackage(wpIds); }}
+              onClose={() => setBarPopover(null)}
+            />
+          );
+        })()}
       </div>
     </div>
   );
@@ -1370,7 +1724,36 @@ export function OverviewScreen() {
         orderNow: false, complete: false, readiness: 'none' as const, supplyOnly: earliest.supplyOnly,
       };
     }).sort((a, b) => a.date.localeCompare(b.date));
-    if (visible.length === 0 && fmMilestones.length === 0) return { project, milestones: [] };
+    // Install rows — one bar per package with an OPEN planned install window.
+    // Supply-only packages have no installation phase at all (§4.5); closed and
+    // unscheduled ('procurement') ones draw nothing. Read off the package's FULL roster,
+    // not just the dated items the milestones group by — a window is a plan and doesn't
+    // wait for an On-Site Req. date.
+    const instTodayISO = today();
+    const instByWp = new Map<string, typeof timelineItems>();
+    timelineItems.filter((x) => x.pkg.projectId === project.id).forEach((x) => {
+      const g = instByWp.get(x.pkg.id);
+      if (g) g.push(x); else instByWp.set(x.pkg.id, [x]);
+    });
+    const memberBars: InstallBar[] = [...instByWp.values()].flatMap((xs) => {
+      if (xs[0].supplyOnly) return [];
+      const items = xs.map((x) => x.i);
+      const phase = packagePhase(items, false, instTodayISO);
+      if (phase === 'closed' || phase === 'procurement') return [];
+      return [{
+        wpId: xs[0].pkg.id, label: xs[0].pkg.label, prefix: xs[0].pkg.prefix, itemId: xs[0].i.id,
+        window: installWindow(items), phase,
+        conflict: installConflict(items, false, instTodayISO),
+        readiness: packageReadiness(items, false),
+        itemIds: xs.map((x) => x.i.id),
+        installable: xs.filter((x) => (pendingInstallQty(x.i) ?? 0) > 0).length,
+      }];
+    }).sort((a, b) => prefixCompare(a.prefix, b.prefix));
+    // One bar per SHARED window (lote 76): packages with the exact same aggregate
+    // window collapse — same start AND same end. Members are already sorted, so the
+    // group's position is its first member's.
+    const installBars = groupInstallBars(memberBars);
+    if (visible.length === 0 && fmMilestones.length === 0) return { project, milestones: [], installBars };
     // Collapse by RENDERED POSITION, not by raw date. Two packages that share a Req. date
     // land on the same pixel — but so do two OVERDUE packages with DIFFERENT dates, because
     // `frac` clamps everything before today onto the TODAY line. Both cases used to render
@@ -1413,8 +1796,22 @@ export function OverviewScreen() {
         wpEntries: group.map((m) => ({ wpId: m.wpId!, label: m.label, itemId: m.itemId, date: m.date, readiness: m.readiness, supplyOnly: m.supplyOnly })),
       };
     }).sort((a, b) => a.date.localeCompare(b.date));
-    return { project, milestones: [...milestones, ...fmMilestones] };
-  }).filter((l) => l.milestones.length > 0);
+    return { project, milestones: [...milestones, ...fmMilestones], installBars };
+    // A lane with bars but no milestone still renders — a package can carry a planned
+    // install window without an On-Site Req. date, and its install row is its only surface.
+  }).filter((l) => l.milestones.length > 0 || l.installBars.length > 0);
+  // The legend's install key hangs off this one flag.
+  const anyInstallBars = lanes.some((l) => l.installBars.length > 0);
+  // The install-bar colour, a UI pref PER PROJECT (localStorage, lote 75 — antes una
+  // global con la muestra en la leyenda). El mapa guarda solo los proyectos que el
+  // usuario re-eligió en esta sesión; el resto lee localStorage al vuelo, así la barra
+  // y el popover repintan en el mismo render que el pick.
+  const [barTones, setBarTones] = useState<Record<string, InstallBarTone>>({});
+  const barToneOf = (projectId: string): InstallBarTone => barTones[projectId] ?? loadInstallBarTone(projectId);
+  const pickBarTone = (projectId: string, key: string) => {
+    setBarTones((m) => ({ ...m, [projectId]: installBarToneOf(key) }));
+    saveInstallBarTone(projectId, key);
+  };
 
   // Drag / button reschedule — set the same On-Site (or Field Measure) date on a
   // package's items (or the packages a collapsed dot actually stands for). Edits the
@@ -1697,7 +2094,7 @@ export function OverviewScreen() {
       const at = (s: ItemStage) => xs.filter((x) => itemStage(x.r) === s).length;
       // Urgency and target date come from everything still open — including material that
       // hasn't shipped yet, whose Req. date is just as passed.
-      const dated = open.filter((x) => x.r.onsite).sort((a, b) => a.r.onsite.localeCompare(b.r.onsite));
+      const dated = open.filter((x) => installDateOf(x.r)).sort((a, b) => installDateOf(a.r).localeCompare(installDateOf(b.r)));
       const worst = open.map(awaitingUrgency).sort((a, b) => URGENCY_RANK[b] - URGENCY_RANK[a])[0] ?? 'scheduled';
       // Waiting stays about material IN HAND — something that never arrived hasn't been
       // waiting anywhere.
@@ -1714,7 +2111,7 @@ export function OverviewScreen() {
         closed,
         awaiting: pend.length,
         open: open.length,
-        nextOnsite: dated[0]?.r.onsite ?? '',
+        nextOnsite: dated[0] ? installDateOf(dated[0].r) : '',
         urgency: worst,
         itemId: (dated[0] ?? open[0] ?? xs[0]).i.id,
         waited: waits.length ? Math.max(...waits) : null,
@@ -1764,7 +2161,7 @@ export function OverviewScreen() {
           key: x.i.id, itemId: x.i.id, description: x.r.description, qty: x.r.qty, um: x.r.um,
           stage,
           stageDate: stage === 'installed' ? x.r.installedDate : stage === 'on-site' ? x.r.siteDate : stage === 'warehouse' ? x.r.receivedDate : '',
-          onsite: x.r.onsite, urgency: awaitingUrgency(x),
+          onsite: installDateOf(x.r), urgency: awaitingUrgency(x),
           closed: isClosed(x.r, x.supplyOnly),
           backorder: hasOpenBackorder(x.r) ? backorderQty(x.r) : null,
           // Against the live DRAFT, which is what `stagePatch` will see.
@@ -1795,6 +2192,42 @@ export function OverviewScreen() {
     if (!pkgModalPkg) return;
     actions.bulkEditItems(pkgModalItems.map((i) => i.id), { installStart: next.start, installEnd: next.end });
     actions.savePackageToReport(pkgModalPkg.id);
+  };
+
+  /* §7.7 — the timeline bar drag. Same write path as setMilestoneDate: the ids arrive
+   * from the bar itself (exactly the roster it was derived from), the confirm names the
+   * window and the count, and the publish rides the same functional-update chain so one
+   * Undo reverts the whole thing. Lote 76: a GROUPED bar speaks for several packages —
+   * the confirm says how many and EVERY member package publishes. A mixed member
+   * collapses its items' windows to the dropped one (§9.5) — the warning line is in the
+   * confirm, never a surprise. */
+  const moveInstallWindow = (label: string, next: { start: string; end: string }, itemIds: string[], wpIds: string[], anyMixed: boolean) => {
+    if (!itemIds.length) return;
+    const what = wpIds.length > 1 ? `${wpIds.length} packages` : `"${label}"`;
+    const msg = `Move the installation window of ${what} to "${installWindowSummary(next.start, next.end)}" for all ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}?`
+      + (anyMixed ? `\n\n⚠ Some items have different windows — this collapses them all to the one you drop.` : '')
+      + `\n\nThis publishes ${wpIds.length > 1 ? 'those packages' : label} to the report — any other pending edits in ${wpIds.length > 1 ? 'them' : 'it'} go too. Undo is available right after.`;
+    if (!window.confirm(msg)) return;
+    actions.bulkEditItems(itemIds, { installStart: next.start, installEnd: next.end });
+    wpIds.forEach((wpId) => actions.savePackageToReport(wpId));
+  };
+
+  /* The bar popover's "Mark installed" (lote 75; per selected package since lote 76).
+   * RÉCORD, not plan: logs the installation of everything received so far, dated today
+   * — the Material List's exact semantics via `installPackage`. Items with nothing on
+   * site are skipped (the confirm says how many). Does NOT publish: the packages dirty
+   * and ride the next Save to report, same as logging from the Material List. */
+  const installPackageFromTimeline = (wpIds: string[]) => {
+    const rows = db.items.filter((i) => wpIds.includes(i.wpId));
+    const installable = rows.filter((i) => (pendingInstallQty(i) ?? 0) > 0);
+    if (!installable.length) return;
+    const skipped = rows.length - installable.length;
+    const what = wpIds.length > 1 ? `${wpIds.length} packages` : `"${db.packages.find((p) => p.id === wpIds[0])?.label ?? 'package'}"`;
+    const msg = `Mark ${what} as installed? This logs the installation of ${installable.length} item${installable.length === 1 ? '' : 's'} — everything received so far — with today's date.`
+      + (skipped > 0 ? `\n\n${skipped} item${skipped === 1 ? ' has' : 's have'} nothing on site — ${skipped === 1 ? 'it' : 'they'} won't be marked.` : '')
+      + `\n\nThis does not publish yet — ${wpIds.length > 1 ? 'those packages go' : 'the package goes'} to the report with your next Save, same as the Material List. Undo is available right after.`;
+    if (!window.confirm(msg)) return;
+    actions.installPackage(installable.map((i) => i.id));
   };
 
   // ---- The quick edit (lote 64): fill in the data the board is counting ----
@@ -2035,9 +2468,9 @@ export function OverviewScreen() {
           title="Timeline"
           caption={<>6 months from today · hover for detail · click to open · <strong>drag a dot to reschedule</strong> · click a ◆ once measured</>}
           captionTitle="Fixed 6-month window from today. Overdue Req. dates show only when they still have ORDER NOW items, and are pinned to today; an unconfirmed ◆ field-measure visit is always pinned there. Confirming a drag — or a ◆ — publishes the package to the report, no second save needed."
-          right={<TimelineLegend />}
+          right={<TimelineLegend showInstall={anyInstallBars} />}
         />
-        <ReqDateTimeline lanes={lanes} onJumpItem={jumpToItem} onJumpProject={jumpProject} onSetDate={setMilestoneDate} onConfirmFm={confirmFieldMeasure} />
+        <ReqDateTimeline lanes={lanes} onJumpItem={jumpToItem} onJumpProject={jumpProject} onSetDate={setMilestoneDate} onConfirmFm={confirmFieldMeasure} barToneOf={barToneOf} onPickTone={pickBarTone} onInstallPackage={installPackageFromTimeline} onMoveWindow={moveInstallWindow} />
       </section>
 
       {/* --------------------- 4. Installation status & What to watch share a row */}

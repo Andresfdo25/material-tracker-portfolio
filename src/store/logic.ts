@@ -671,6 +671,45 @@ export function installBarGeometry(w: Pick<InstallWindow, 'start' | 'end'>, toda
   return { leftIso: start, rightIso: start, overdue: false, single: true };
 }
 
+/** The grouping key of a timeline install bar (lote 76): packages sharing the EXACT
+ * aggregate window — same start AND same end — draw as ONE bar, the same idea as the
+ * collapsed "All packages, one date" milestone dot. Same end with a different start is
+ * a different plan and does NOT group. */
+export function installWindowKey(w: Pick<InstallWindow, 'start' | 'end'>): string {
+  return `${w.start}|${w.end}`;
+}
+
+export interface InstallBarGroup<T> {
+  key: string;
+  members: T[];
+  conflict: boolean;
+  mixed: boolean;
+  itemIds: string[];
+  installable: number;
+}
+/** Roll a lane's per-package install bars up to one bar per shared window. First-seen
+ * order is preserved (the caller sorts before grouping). `conflict`/`mixed` are an OR
+ * over members — an alarm never dilutes by grouping. `phase` needs no roll-up: members
+ * share the window, so they share started-ness. `itemIds` concatenate (an item belongs
+ * to ONE package, so no dedupe is needed) and `installable` sums. */
+export function groupInstallBars<T extends { window: InstallWindow; conflict: boolean; itemIds: string[]; installable: number }>(
+  bars: T[],
+): InstallBarGroup<T>[] {
+  const by = new Map<string, T[]>();
+  bars.forEach((b) => {
+    const k = installWindowKey(b.window);
+    const g = by.get(k);
+    if (g) g.push(b); else by.set(k, [b]);
+  });
+  return [...by.entries()].map(([key, members]) => ({
+    key, members,
+    conflict: members.some((m) => m.conflict),
+    mixed: members.some((m) => m.window.mixed),
+    itemIds: members.flatMap((m) => m.itemIds),
+    installable: members.reduce((n, m) => n + m.installable, 0),
+  }));
+}
+
 export type PackagePhase = 'closed' | 'installing' | 'install-planned' | 'procurement';
 /** Where the package sits against its plan, for the timeline bar. LOAD-BEARING RULE:
  * readiness never gates the phase — a package with readiness 'none' and a started window

@@ -13,7 +13,7 @@ import { VENDORS_SEED } from '../seed/catalogs';
 import {
   addDays, addDeliveryTo, addInstallTo, applyItemPatch, clearDeliveriesFrom, awaitingInstall, backorderQty, closesAtSite, closeVia, closingStage,
   computeItem, computeShipDate, daysLate, deliveryLogRows, deliveryTotals, deliveryWatch, detourOf, diffDays, distinctWindowCount, fieldMeasurePending, fmtDays, fmtFileStamp, fmtLong, fmtMD, fmtMDY,
-  hasOpenBackorder, INSTALL_DEFAULTS, INSTALL_WINDOW_DEFAULTS, installAllReceived, installBarGeometry, installCap, installConflict, installDateOf, installUrgency, installWindow, installWindowSummary, isClosed, isPartial, isPartiallyInstalled, itemDirty, itemStage, logDrivesStage, matchVendor,
+  hasOpenBackorder, groupInstallBars, INSTALL_DEFAULTS, INSTALL_WINDOW_DEFAULTS, installAllReceived, installBarGeometry, installCap, installConflict, installDateOf, installUrgency, installWindow, installWindowSummary, isClosed, isPartial, isPartiallyInstalled, itemDirty, itemStage, logDrivesStage, matchVendor,
   migrateDb, mosaicCards, normalizeUm, normQty, packagePhase, packageProgressFlag, packageReadiness, parseISO, pendingInstallQty, prefixCompare, progressPct, projectClosesAtSite, READINESS_META, readinessMark, removeDeliveryFrom,
   removeInstallFrom, REPORT_FIELDS, snapshot, splitDescription, stableSlot, stagePatch, SUBMITTAL_DEFAULTS, submittalApproved,
   submittalBlockers, today, toISO, totalQty,
@@ -1546,6 +1546,65 @@ describe('installBarGeometry — which dates the timeline bar draws between', ()
       .toEqual({ leftIso: '2026-07-01', rightIso: '2026-07-01', overdue: false, single: true });
   });
 });
+
+
+describe('groupInstallBars — one bar per shared window (lote 76)', () => {
+  const bar = (wpId: string, start: string, end: string, over: Record<string, unknown> = {}) => ({
+    wpId, window: { start, end, mixed: false }, conflict: false,
+    itemIds: [`i-${wpId}`], installable: 1, ...over,
+  });
+
+  it('packages with the same start AND end collapse into one bar, first-seen order', () => {
+    const groups = groupInstallBars([
+      bar('wA', '2026-08-01', '2026-08-15'),
+      bar('wB', '2026-08-01', '2026-08-15'),
+      bar('wC', '2026-09-01', '2026-09-15'),
+    ]);
+    expect(groups).toHaveLength(2);
+    expect(groups[0].members.map((m) => m.wpId)).toEqual(['wA', 'wB']);
+    expect(groups[0].key).toBe('2026-08-01|2026-08-15');
+    expect(groups[1].members.map((m) => m.wpId)).toEqual(['wC']);
+  });
+
+  it('same end but different start does NOT group', () => {
+    const groups = groupInstallBars([
+      bar('wA', '2026-08-01', '2026-08-15'),
+      bar('wB', '2026-08-03', '2026-08-15'),
+    ]);
+    expect(groups).toHaveLength(2);
+  });
+
+  it('end-only windows group too (same key rule)', () => {
+    const groups = groupInstallBars([bar('wA', '', '2026-08-15'), bar('wB', '', '2026-08-15')]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe('|2026-08-15');
+  });
+
+  it('conflict and mixed roll up as an OR — the alarm never dilutes', () => {
+    const groups = groupInstallBars([
+      bar('wA', '2026-08-01', '2026-08-15', { conflict: true }),
+      bar('wA2', '2026-08-01', '2026-08-15', { window: { start: '2026-08-01', end: '2026-08-15', mixed: true } }),
+    ]);
+    expect(groups[0].conflict).toBe(true);
+    expect(groups[0].mixed).toBe(true);
+  });
+
+  it('a lone package is a group of 1 — same code path, no flags invented', () => {
+    const groups = groupInstallBars([bar('wA', '2026-08-01', '2026-08-15')]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ conflict: false, mixed: false, installable: 1 });
+  });
+
+  it('itemIds concatenate and installable sums across members', () => {
+    const groups = groupInstallBars([
+      bar('wA', '2026-08-01', '2026-08-15', { itemIds: ['i1', 'i2'], installable: 2 }),
+      bar('wB', '2026-08-01', '2026-08-15', { itemIds: ['i3'], installable: 0 }),
+    ]);
+    expect(groups[0].itemIds).toEqual(['i1', 'i2', 'i3']);
+    expect(groups[0].installable).toBe(2);
+  });
+});
+
 
 /* ============== 21. installUrgency against the planned window (spec §7.5) ====
  * The clock is frozen at 2026-07-15. When the item carries a planned install window,
